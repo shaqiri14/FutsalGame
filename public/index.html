@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Superboteo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- NOME -->
+  <section id="screen-name" class="screen active">
+    <div class="card">
+      <div class="brand">Superboteo</div>
+      <p class="sub">Futebol de mesa online. Escolhe o teu nome para começar.</p>
+      <input id="nameInput" maxlength="20" placeholder="O teu nome" autocomplete="off">
+      <button id="btnSetName">Entrar</button>
+    </div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="screen-lobby" class="screen">
+    <div class="topbar">
+      <div class="brand small">Superboteo</div>
+      <div class="who">Olá, <span id="lobbyName"></span></div>
+      <button id="btnShowRanking" class="ghost">Ranking</button>
+    </div>
+
+    <div class="lobby-grid">
+      <div class="panel">
+        <h2>Criar sala</h2>
+        <label>Nome da sala</label>
+        <input id="roomNameInput" maxlength="30" placeholder="Ex: Sala do Fabiano" autocomplete="off">
+        <label>Vai até quantos golos</label>
+        <input id="bestOfInput" type="number" min="1" max="21" value="5">
+        <button id="btnCreateRoom">Criar sala</button>
+      </div>
+
+      <div class="panel">
+        <h2>Salas disponíveis</h2>
+        <div id="roomList" class="room-list">
+          <p class="hint">A carregar salas…</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ESPERA -->
+  <section id="screen-wait" class="screen">
+    <div class="card">
+      <div class="brand small">À espera de adversário…</div>
+      <p class="sub" id="waitRoomInfo"></p>
+      <div class="spinner"></div>
+      <button id="btnCancelWait" class="ghost">Cancelar</button>
+    </div>
+  </section>
+
+  <!-- JOGO -->
+  <section id="screen-game" class="screen">
+    <div class="frame">
+      <div class="hud">
+        <div class="title">Superboteo</div>
+        <div class="score">
+          <span class="a" id="scoreA">0</span><span class="sep">—</span><span class="b" id="scoreB">0</span>
+        </div>
+        <div class="turn a" id="turnBadge">VEZ: VERMELHO</div>
+      </div>
+      <div class="players-row">
+        <span class="p-a" id="labelA">Vermelho</span>
+        <span class="vs">vs</span>
+        <span class="p-b" id="labelB">Azul</span>
+      </div>
+      <canvas id="pitch" width="760" height="480"></canvas>
+      <div class="footer">
+        <div class="power-wrap">
+          <label for="powerSlider">Força</label>
+          <input type="range" id="powerSlider" min="15" max="100" value="70">
+          <span id="powerVal">70%</span>
+        </div>
+        <span class="hint">Arrasta um pouco na direção do remate — a barra define a força. 2 dedos: gesto direto.</span>
+        <button id="btnLeaveGame" class="ghost">Sair</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- FIM DE JOGO -->
+  <section id="screen-over" class="screen">
+    <div class="card">
+      <div class="brand" id="overTitle">GOLO FINAL!</div>
+      <p class="sub" id="overScore"></p>
+      <button id="btnBackToLobby">Voltar ao lobby</button>
+    </div>
+  </section>
+
+  <!-- RANKING -->
+  <section id="screen-ranking" class="screen">
+    <div class="topbar">
+      <div class="brand small">Ranking</div>
+      <button id="btnCloseRanking" class="ghost">Voltar</button>
+    </div>
+    <div class="panel wide">
+      <table id="rankingTable">
+        <thead>
+          <tr><th>#</th><th>Jogador</th><th>V</th><th>E</th><th>D</th><th>Pts</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/game.js"></script>
+</body>
+</html>
