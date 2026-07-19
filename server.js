@@ -183,5 +183,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Superboteo a correr na porta ${PORT}`);
+  console.log(`Futsal Game a correr na porta ${PORT}`);
 });

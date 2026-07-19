@@ -1,4 +1,4 @@
-# Superboteo — Protótipo
+# Futsal Game — Protótipo
 
 Jogo de futebol de mesa (estilo Subbuteo) em HTML5 Canvas, servido por um pequeno servidor Node/Express — pronto para o Railway.
 
@@ -9,7 +9,7 @@ Jogo de futebol de mesa (estilo Subbuteo) em HTML5 Canvas, servido por um pequen
 
 ## Estrutura
 ```
-superboteo/
+futsal-game/
 ├── server.js        → servidor Express que serve o jogo
 ├── package.json
 ├── public/
@@ -30,19 +30,19 @@ Abre `http://localhost:3000`.
 ```bash
 git init
 git add .
-git commit -m "Superboteo — protótipo inicial"
+git commit -m "Futsal Game — protótipo inicial"
 git branch -M main
-git remote add origin https://github.com/<o-teu-user>/superboteo.git
+git remote add origin https://github.com/<o-teu-user>/futsal-game.git
 git push -u origin main
 ```
 Podes deixar o repositório **privado** — o Railway liga-se diretamente ao GitHub e não precisa que seja público.
 
 ### 2. Railway
 1. Vai a [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**.
-2. Escolhe o repositório `superboteo` (autoriza o acesso ao GitHub se for a primeira vez).
+2. Escolhe o repositório `futsal-game` (autoriza o acesso ao GitHub se for a primeira vez).
 3. O Railway deteta o `package.json` e o `npm start` automaticamente — não precisas de configurar nada.
 4. Em **Settings → Networking**, gera um domínio público (`Generate Domain`).
-5. Fica disponível em algo como `https://superboteo-production.up.railway.app`.
+5. Fica disponível em algo como `https://futsal-game-production.up.railway.app`.
 
 Sempre que fizeres `git push` para o `main`, o Railway faz redeploy automático — tal como já fazes no Booklys.
 

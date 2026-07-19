@@ -381,14 +381,14 @@ canvas.addEventListener('pointerup', (e)=>{
     const capped = Math.min(speed*SWIPE_POWER, MAX_SWIPE_SPEED);
     if(speed > 0){ vx = dvx/speed*capped; vy = dvy/speed*capped; }
   } else {
-    // direção pelo arrasto (mesmo curto), força pela barra ao lado
-    let pullX = dragStart.x-mouse.x, pullY = dragStart.y-mouse.y;
-    const pullDist = Math.hypot(pullX,pullY);
-    if(pullDist >= MIN_PULL_TO_AIM){
+    // aponta-se na direção do remate — o boneco dispara para onde apontares
+    let aimX = mouse.x-dragStart.x, aimY = mouse.y-dragStart.y;
+    const aimDist = Math.hypot(aimX,aimY);
+    if(aimDist >= MIN_PULL_TO_AIM){
       const powerPct = parseInt(document.getElementById('powerSlider').value)/100;
       const speed = powerPct * MAX_PULL_SPEED;
-      vx = (pullX/pullDist)*speed;
-      vy = (pullY/pullDist)*speed;
+      vx = (aimX/aimDist)*speed;
+      vy = (aimY/aimDist)*speed;
     }
   }
 
@@ -403,10 +403,33 @@ document.getElementById('powerSlider').addEventListener('input', (e)=>{
   document.getElementById('powerVal').textContent = e.target.value + '%';
 });
 
+const AIM_LENGTH = 42; // comprimento fixo da mira — curto de propósito
+
 function drawAim(){
   if(!dragging || maxFingers >= 2) return;
-  ctx.beginPath(); ctx.moveTo(dragging.x,dragging.y); ctx.lineTo(mouse.x,mouse.y);
-  ctx.strokeStyle = 'rgba(212,175,55,0.8)'; ctx.lineWidth = 2; ctx.setLineDash([4,4]); ctx.stroke(); ctx.setLineDash([]);
+  const dx = mouse.x-dragStart.x, dy = mouse.y-dragStart.y;
+  const dist = Math.hypot(dx,dy);
+  if(dist < MIN_PULL_TO_AIM) return;
+  const ux = dx/dist, uy = dy/dist;
+
+  const startX = dragging.x + ux*dragging.r*1.3;
+  const startY = dragging.y + uy*dragging.r*1.3;
+  const endX = dragging.x + ux*(dragging.r*1.3+AIM_LENGTH);
+  const endY = dragging.y + uy*(dragging.r*1.3+AIM_LENGTH);
+
+  ctx.strokeStyle = 'rgba(212,175,55,0.9)';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(startX,startY); ctx.lineTo(endX,endY); ctx.stroke();
+
+  const headSize = 7;
+  const angle = Math.atan2(uy,ux);
+  ctx.beginPath();
+  ctx.moveTo(endX,endY);
+  ctx.lineTo(endX - headSize*Math.cos(angle-0.4), endY - headSize*Math.sin(angle-0.4));
+  ctx.lineTo(endX - headSize*Math.cos(angle+0.4), endY - headSize*Math.sin(angle+0.4));
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(212,175,55,0.9)';
+  ctx.fill();
 }
 
 // ---- física ----

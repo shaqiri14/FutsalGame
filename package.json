@@ -1,7 +1,7 @@
 {
-  "name": "superboteo",
+  "name": "futsal-game",
   "version": "1.0.0",
-  "description": "Superboteo — futebol de mesa online com salas, ranking e multiplayer",
+  "description": "Futsal Game — futebol de mesa online com salas, ranking e multiplayer",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
