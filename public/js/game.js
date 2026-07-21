@@ -1,6 +1,7 @@
 // ============ ESTADO GERAL / NAVEGAÇÃO ============
 const socket = io();
 let myName = null;
+let myToken = null;
 let myTeam = null;
 let currentRoom = null;
 
@@ -8,18 +9,73 @@ function showScreen(id){
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
 }
+function saveSession(){
+  sessionStorage.setItem('fg_name', myName || '');
+  sessionStorage.setItem('fg_token', myToken || '');
+  if(currentRoom){
+    sessionStorage.setItem('fg_room', currentRoom.id);
+    sessionStorage.setItem('fg_team', myTeam || '');
+  }
+}
+function clearRoomSession(){
+  sessionStorage.removeItem('fg_room');
+  sessionStorage.removeItem('fg_team');
+}
 
 // ---- ecrã nome ----
-document.getElementById('btnSetName').addEventListener('click', submitName);
+document.getElementById('btnSetName').addEventListener('click', () => submitName());
 document.getElementById('nameInput').addEventListener('keydown', e => { if(e.key==='Enter') submitName(); });
 function submitName(){
   const v = document.getElementById('nameInput').value.trim();
   if(!v) return;
-  socket.emit('set_name', v);
+  myToken = sessionStorage.getItem('fg_token') || null;
+  socket.emit('set_name', { name: v, token: myToken });
 }
-socket.on('name_ok', (name) => {
+
+socket.on('name_ok', ({ name, token }) => {
   myName = name;
+  myToken = token;
+  saveSession();
   document.getElementById('lobbyName').textContent = name;
+
+  // tenta reentrar automaticamente numa sala se veio de um refresh a meio de um jogo
+  const savedRoom = sessionStorage.getItem('fg_room');
+  if(savedRoom){
+    socket.emit('rejoin_room', { roomId: savedRoom, token: myToken });
+  } else {
+    showScreen('screen-lobby');
+  }
+});
+
+// ---- reconexão automática ao carregar a página ----
+window.addEventListener('load', () => {
+  const savedName = sessionStorage.getItem('fg_name');
+  const savedToken = sessionStorage.getItem('fg_token');
+  if(savedName && savedToken){
+    document.getElementById('nameInput').value = savedName;
+    myToken = savedToken;
+    socket.emit('set_name', { name: savedName, token: savedToken });
+  }
+});
+
+socket.on('rejoin_ok', ({ room, myTeam: team, players, scoreA: a, scoreB: b, turn: t }) => {
+  currentRoom = room;
+  myTeam = team;
+  saveSession();
+  const pa = players.find(p => p.team === 'A');
+  const pb = players.find(p => p.team === 'B');
+  document.getElementById('labelA').textContent = pa.name;
+  document.getElementById('labelB').textContent = pb.name;
+  scoreA = a; scoreB = b; turn = t;
+  document.getElementById('scoreA').textContent = a;
+  document.getElementById('scoreB').textContent = b;
+  updateTurnBadge();
+  resetPositions(); // recomeça este ponto a meio-campo (o placar mantém-se)
+  hideReconnectBanner();
+  showScreen('screen-game');
+});
+socket.on('rejoin_failed', () => {
+  clearRoomSession();
   showScreen('screen-lobby');
 });
 
@@ -80,28 +136,60 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// ---- sala de espera ----
+// ---- chat público ----
+socket.on('chat_history', (history) => {
+  const box = document.getElementById('chatMessages');
+  box.innerHTML = '';
+  history.forEach(addChatMessage);
+});
+socket.on('chat_message', (msg) => addChatMessage(msg));
+
+function addChatMessage(msg){
+  const box = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.innerHTML = `<span class="name">${escapeHtml(msg.name)}:</span> <span class="txt">${escapeHtml(msg.text)}</span>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+function sendChat(){
+  const input = document.getElementById('chatInput');
+  const v = input.value.trim();
+  if(!v || !myName) return;
+  socket.emit('chat_message', v);
+  input.value = '';
+}
+document.getElementById('btnChatSend').addEventListener('click', sendChat);
+document.getElementById('chatInput').addEventListener('keydown', e => { if(e.key==='Enter') sendChat(); });
+
+// ---- sala de espera (banner, não bloqueia o lobby) ----
 socket.on('room_joined', ({ room, myTeam: team }) => {
   currentRoom = room;
   myTeam = team;
-  document.getElementById('waitRoomInfo').textContent = `"${room.name}" — até ${room.bestOf} golos`;
-  showScreen('screen-wait');
+  saveSession();
+  document.getElementById('waitRoomInfo').textContent = `À espera de adversário em "${room.name}" — até ${room.bestOf} golos`;
+  document.getElementById('waitingBanner').style.display = 'flex';
+  showScreen('screen-lobby');
 });
 document.getElementById('btnCancelWait').addEventListener('click', () => {
   socket.emit('leave_room');
-  showScreen('screen-lobby');
+  document.getElementById('waitingBanner').style.display = 'none';
+  clearRoomSession();
+  currentRoom = null;
 });
 
 // ---- início de partida ----
-socket.on('match_start', ({ room, players }) => {
+socket.on('match_start', ({ room, players, scoreA: a, scoreB: b, turn: t }) => {
   currentRoom = room;
-  const a = players.find(p => p.team === 'A');
-  const b = players.find(p => p.team === 'B');
-  document.getElementById('labelA').textContent = a.name;
-  document.getElementById('labelB').textContent = b.name;
-  scoreA = 0; scoreB = 0; turn = 'A';
-  document.getElementById('scoreA').textContent = 0;
-  document.getElementById('scoreB').textContent = 0;
+  saveSession();
+  document.getElementById('waitingBanner').style.display = 'none';
+  const pa = players.find(p => p.team === 'A');
+  const pb = players.find(p => p.team === 'B');
+  document.getElementById('labelA').textContent = pa.name;
+  document.getElementById('labelB').textContent = pb.name;
+  scoreA = a; scoreB = b; turn = t;
+  document.getElementById('scoreA').textContent = a;
+  document.getElementById('scoreB').textContent = b;
   updateTurnBadge();
   resetPositions();
   showScreen('screen-game');
@@ -109,12 +197,21 @@ socket.on('match_start', ({ room, players }) => {
 
 socket.on('opponent_left', () => {
   alert('O adversário saiu da sala.');
-  socket.emit('leave_room');
+  clearRoomSession();
+  currentRoom = null;
+  socket.emit('get_rankings');
   showScreen('screen-lobby');
 });
 
+function showReconnectBanner(){ document.getElementById('reconnectBanner').style.display = 'block'; }
+function hideReconnectBanner(){ document.getElementById('reconnectBanner').style.display = 'none'; }
+socket.on('opponent_disconnected', showReconnectBanner);
+socket.on('opponent_reconnected', hideReconnectBanner);
+
 document.getElementById('btnLeaveGame').addEventListener('click', () => {
   socket.emit('leave_room');
+  clearRoomSession();
+  currentRoom = null;
   showScreen('screen-lobby');
 });
 
@@ -133,8 +230,9 @@ socket.on('score_update', ({ scoreA: a, scoreB: b, turn: t }) => {
 });
 
 socket.on('match_over', ({ winner, scoreA: a, scoreB: b }) => {
-  const title = winner === 'draw' ? 'EMPATE!' :
-    (winner === myTeam ? 'VITÓRIA!' : 'DERROTA');
+  clearRoomSession();
+  currentRoom = null;
+  const title = winner === 'draw' ? 'EMPATE!' : (winner === myTeam ? 'VITÓRIA!' : 'DERROTA');
   document.getElementById('overTitle').textContent = title;
   document.getElementById('overScore').textContent = `Resultado final: ${a} — ${b}`;
   showScreen('screen-over');
@@ -151,7 +249,7 @@ const W = canvas.width, H = canvas.height;
 const GOAL_W = 120;
 
 const DISC_FRICTION = 0.983;
-const BALL_FRICTION = 0.986;     // desliza bastante mais antes de parar
+const BALL_FRICTION = 0.986;
 const MIN_SPEED = 0.02;
 const MAX_SPEED_DISC = 7;
 const MAX_SPEED_BALL = 13;
@@ -169,8 +267,9 @@ const SPIN_TRANSFER = 0.85;
 const SPIN_DECAY = 0.988;
 const MAX_SPIN_VEL = 0.75;
 
-const MAX_PULL_SPEED = 7;        // força máxima do controlo por barra
-const MIN_PULL_TO_AIM = 6;       // px mínimos de arrasto só para definir direção
+const MAX_PULL_SPEED = 7;
+const MIN_PULL_TO_AIM = 6;
+const AIM_LENGTH = 42;
 const SWIPE_POWER = 0.9;
 const MAX_SWIPE_SPEED = 9;
 
@@ -381,7 +480,6 @@ canvas.addEventListener('pointerup', (e)=>{
     const capped = Math.min(speed*SWIPE_POWER, MAX_SWIPE_SPEED);
     if(speed > 0){ vx = dvx/speed*capped; vy = dvy/speed*capped; }
   } else {
-    // aponta-se na direção do remate — o boneco dispara para onde apontares
     let aimX = mouse.x-dragStart.x, aimY = mouse.y-dragStart.y;
     const aimDist = Math.hypot(aimX,aimY);
     if(aimDist >= MIN_PULL_TO_AIM){
@@ -402,8 +500,6 @@ canvas.addEventListener('pointerup', (e)=>{
 document.getElementById('powerSlider').addEventListener('input', (e)=>{
   document.getElementById('powerVal').textContent = e.target.value + '%';
 });
-
-const AIM_LENGTH = 42; // comprimento fixo da mira — curto de propósito
 
 function drawAim(){
   if(!dragging || maxFingers >= 2) return;
@@ -489,10 +585,14 @@ function resolveCollision(a,b){
   const impulse = -(1+restitution)*rel/(1/a.mass+1/b.mass);
   a.vx -= (impulse/a.mass)*nx; a.vy -= (impulse/a.mass)*ny;
   b.vx += (impulse/b.mass)*nx; b.vy += (impulse/b.mass)*ny;
+
+  // toque de raspão: a componente tangencial do impacto vira rotação real da bola,
+  // com a fórmula do torque real (r × F) no ponto de contacto — toques de lados
+  // opostos produzem sempre rotações opostas
   if(involvesBall){
     const tx=-ny, ty=nx, relT=rvx*tx+rvy*ty, spinKick=relT*SPIN_TRANSFER;
     if(a===ball) a.angVel -= spinKick/a.r;
-    if(b===ball) b.angVel += spinKick/b.r;
+    if(b===ball) b.angVel -= spinKick/b.r;
   }
 }
 
@@ -532,6 +632,30 @@ function loop(){
   }
   requestAnimationFrame(loop);
 }
+
+// a equipa A (vermelho) é a autoridade da física — envia o estado real várias
+// vezes por segundo; a equipa B (azul) corrige-se por esse estado, evitando
+// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo
+setInterval(() => {
+  if(myTeam === 'A' && currentRoom && document.getElementById('screen-game').classList.contains('active') && !celebrating){
+    socket.emit('state_sync', {
+      roomId: currentRoom.id,
+      ball: { x:ball.x, y:ball.y, vx:ball.vx, vy:ball.vy, spin:ball.spin, angVel:ball.angVel },
+      discs: allDiscs().map(d => ({ id:d.id, x:d.x, y:d.y, vx:d.vx, vy:d.vy }))
+    });
+  }
+}, 90);
+
+socket.on('state_sync', (state) => {
+  if(myTeam === 'A') return;
+  if(state.ball) Object.assign(ball, state.ball);
+  if(state.discs){
+    state.discs.forEach(sd => {
+      const d = findDiscById(sd.id);
+      if(d){ d.x=sd.x; d.y=sd.y; d.vx=sd.vx; d.vy=sd.vy; }
+    });
+  }
+});
 
 resetPositions();
 loop();

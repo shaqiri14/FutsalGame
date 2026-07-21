@@ -11,8 +11,8 @@ html,body{
   font-family:'Space Mono', monospace;
   color:var(--line);
 }
-.app{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
-.screen{ display:none; width:100%; max-width:860px; }
+.app{ min-height:100vh; display:flex; align-items:flex-start; justify-content:center; padding:20px; }
+.screen{ display:none; width:100%; max-width:1000px; margin:0 auto; }
 .screen.active{ display:block; }
 
 .brand{ font-family:'Anton', sans-serif; letter-spacing:2px; font-size:32px; color:var(--gold); text-transform:uppercase; text-align:center; }
@@ -22,9 +22,9 @@ html,body{
 .card{
   background:var(--wood); border-radius:12px; padding:30px 26px;
   box-shadow: 0 20px 50px rgba(0,0,0,0.6), inset 0 0 0 3px var(--wood-dark);
-  max-width:420px; margin:0 auto; text-align:center;
+  max-width:420px; margin:40px auto 0; text-align:center;
 }
-input[type="text"], input[type="number"], #nameInput, #roomNameInput, #bestOfInput{
+input[type="text"], input[type="number"], #nameInput, #roomNameInput, #bestOfInput, #chatInput{
   width:100%; padding:11px 12px; margin:6px 0 14px; border-radius:6px; border:none;
   background:#241708; color:var(--line); font-family:'Space Mono', monospace; font-size:14px;
 }
@@ -37,13 +37,26 @@ button{
 }
 button:hover{ filter:brightness(1.08); }
 button.ghost{ background:transparent; color:var(--line); box-shadow:inset 0 0 0 1px rgba(255,255,255,0.25); width:auto; }
+button.tiny{ padding:6px 12px; font-size:10px; }
 
-.topbar{ display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; gap:10px; flex-wrap:wrap; }
+.topbar{ display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; gap:10px; flex-wrap:wrap; }
 .who{ font-size:13px; opacity:.8; }
 .who span{ color:var(--gold); font-weight:700; }
 
-.lobby-grid{ display:grid; grid-template-columns:1fr 1.3fr; gap:16px; }
-@media (max-width:720px){ .lobby-grid{ grid-template-columns:1fr; } }
+.waiting-banner{
+  display:flex; align-items:center; gap:12px;
+  background:rgba(212,175,55,0.12); border:1px solid rgba(212,175,55,0.4);
+  border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:12.5px; color:var(--gold);
+}
+.waiting-banner button{ margin-left:auto; }
+
+.reconnect-banner{
+  background:rgba(192,57,43,0.9); color:#fff; text-align:center;
+  padding:8px; border-radius:6px; margin-bottom:10px; font-size:12px; letter-spacing:.5px;
+}
+
+.lobby-grid{ display:grid; grid-template-columns:0.85fr 1fr 1fr; gap:16px; }
+@media (max-width:900px){ .lobby-grid{ grid-template-columns:1fr; } }
 
 .panel{ background:var(--panel); border-radius:10px; padding:18px; }
 .panel.wide{ max-width:600px; margin:0 auto; }
@@ -59,14 +72,28 @@ button.ghost{ background:transparent; color:var(--line); box-shadow:inset 0 0 0 
 .room-item button{ width:auto; padding:8px 14px; font-size:11px; }
 
 .spinner{
-  width:34px; height:34px; margin:10px auto 20px; border-radius:50%;
+  width:34px; height:34px; border-radius:50%;
   border:3px solid rgba(255,255,255,0.15); border-top-color:var(--gold);
   animation:spin 0.9s linear infinite;
 }
+.spinner.small{ width:18px; height:18px; border-width:2px; flex-shrink:0; }
 @keyframes spin{ to{ transform:rotate(360deg); } }
 
+/* CHAT */
+.chat-panel{ display:flex; flex-direction:column; }
+.chat-messages{
+  flex:1; min-height:220px; max-height:280px; overflow-y:auto;
+  background:rgba(0,0,0,0.2); border-radius:8px; padding:10px; margin-bottom:10px;
+  font-size:12px; display:flex; flex-direction:column; gap:6px;
+}
+.chat-messages .msg .name{ color:var(--gold); font-weight:700; }
+.chat-messages .msg .txt{ opacity:.9; word-break:break-word; }
+.chat-input-row{ display:flex; gap:8px; }
+.chat-input-row input{ margin:0; flex:1; }
+.chat-input-row button{ width:auto; padding:11px 16px; }
+
 /* JOGO */
-#screen-game .frame{ padding:18px 18px 22px; background:var(--wood); border-radius:10px; box-shadow: 0 20px 50px rgba(0,0,0,0.6), inset 0 0 0 3px var(--wood-dark); }
+#screen-game .frame{ padding:18px 18px 22px; background:var(--wood); border-radius:10px; box-shadow: 0 20px 50px rgba(0,0,0,0.6), inset 0 0 0 3px var(--wood-dark); max-width:800px; margin:0 auto; }
 .hud{ display:flex; align-items:center; justify-content:space-between; padding:0 6px 8px; }
 .title{ font-family:'Anton', sans-serif; letter-spacing:2px; font-size:20px; color:var(--gold); text-transform:uppercase; }
 .score{ font-family:'Anton', sans-serif; font-size:26px; display:flex; gap:12px; align-items:center; }

@@ -30,6 +30,13 @@
       <button id="btnShowRanking" class="ghost">Ranking</button>
     </div>
 
+    <!-- banner de espera: fica por cima do lobby, não substitui o ecrã -->
+    <div id="waitingBanner" class="waiting-banner" style="display:none;">
+      <div class="spinner small"></div>
+      <span id="waitRoomInfo"></span>
+      <button id="btnCancelWait" class="ghost tiny">Cancelar</button>
+    </div>
+
     <div class="lobby-grid">
       <div class="panel">
         <h2>Criar sala</h2>
@@ -46,22 +53,24 @@
           <p class="hint">A carregar salas…</p>
         </div>
       </div>
-    </div>
-  </section>
 
-  <!-- ESPERA -->
-  <section id="screen-wait" class="screen">
-    <div class="card">
-      <div class="brand small">À espera de adversário…</div>
-      <p class="sub" id="waitRoomInfo"></p>
-      <div class="spinner"></div>
-      <button id="btnCancelWait" class="ghost">Cancelar</button>
+      <div class="panel chat-panel">
+        <h2>Chat público</h2>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div class="chat-input-row">
+          <input id="chatInput" maxlength="300" placeholder="Escreve uma mensagem…" autocomplete="off">
+          <button id="btnChatSend">Enviar</button>
+        </div>
+      </div>
     </div>
   </section>
 
   <!-- JOGO -->
   <section id="screen-game" class="screen">
     <div class="frame">
+      <div id="reconnectBanner" class="reconnect-banner" style="display:none;">
+        O adversário perdeu a ligação — a aguardar reconexão…
+      </div>
       <div class="hud">
         <div class="title">Futsal Game</div>
         <div class="score">
