@@ -70,6 +70,7 @@ socket.on('rejoin_ok', ({ room, myTeam: team, players, scoreA: a, scoreB: b, tur
   document.getElementById('scoreA').textContent = a;
   document.getElementById('scoreB').textContent = b;
   updateTurnBadge();
+  celebrating = false;
   resetPositions(); // recomeça este ponto a meio-campo (o placar mantém-se)
   hideReconnectBanner();
   showScreen('screen-game');
@@ -122,12 +123,12 @@ socket.on('rankings', (list) => {
   const tbody = document.querySelector('#rankingTable tbody');
   tbody.innerHTML = '';
   if(!list.length){
-    tbody.innerHTML = '<tr><td colspan="6" class="hint">Ainda sem jogos registados.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="hint">Ainda sem jogos registados.</td></tr>';
     return;
   }
   list.forEach((r, i) => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td><td>${r.points}</td>`;
+    tr.innerHTML = `<td>${i+1}</td><td>${escapeHtml(r.name)}</td><td>${r.wins}</td><td>${r.draws}</td><td>${r.losses}</td><td>${r.golosMarcados}</td><td>${r.golosSofridos}</td><td>${r.saldo}</td><td>${r.points}</td>`;
     tbody.appendChild(tr);
   });
 });
@@ -191,6 +192,7 @@ socket.on('match_start', ({ room, players, scoreA: a, scoreB: b, turn: t }) => {
   document.getElementById('scoreA').textContent = a;
   document.getElementById('scoreB').textContent = b;
   updateTurnBadge();
+  celebrating = false;
   resetPositions();
   showScreen('screen-game');
 });
@@ -222,11 +224,19 @@ socket.on('opponent_shot', ({ discId, vx, vy }) => {
   if(d){ d.vx = vx; d.vy = vy; }
 });
 
-socket.on('score_update', ({ scoreA: a, scoreB: b, turn: t }) => {
+// o score_update é a fonte única de verdade para o início da celebração de golo —
+// assim os dois lados (quem marcou e o adversário) ficam sempre sincronizados,
+// mesmo que o cliente que marcou já tenha "congelado" localmente um pouco antes
+socket.on('score_update', ({ scoreA: a, scoreB: b, turn: t, scoringTeam }) => {
   scoreA = a; scoreB = b; turn = t;
   document.getElementById('scoreA').textContent = scoreA;
   document.getElementById('scoreB').textContent = scoreB;
   updateTurnBadge();
+  if(!celebrating){
+    celebrating = true;
+    celebrationStart = performance.now();
+    celebrationTeam = scoringTeam;
+  }
 });
 
 socket.on('match_over', ({ winner, scoreA: a, scoreB: b }) => {
@@ -561,14 +571,20 @@ function physicsStep(){
 
   for(let i=0;i<objs.length;i++) for(let j=i+1;j<objs.length;j++) resolveCollision(objs[i],objs[j]);
 
-  if(myTeam === 'A' && currentRoom){
-    if(ball.x+ball.r < FIELD_LEFT){ reportGoal('B'); }
-    else if(ball.x-ball.r > FIELD_RIGHT){ reportGoal('A'); }
+  // assim que o CENTRO da bola cruza a linha de golo (já dentro da baliza),
+  // o golo é reportado de imediato e a física congela nesse mesmo frame —
+  // isto impede que a bola bata na rede e volte a sair para o campo
+  if(myTeam === 'A' && currentRoom && !celebrating){
+    if(ball.x < FIELD_LEFT){ reportGoal('B'); }
+    else if(ball.x > FIELD_RIGHT){ reportGoal('A'); }
   }
 }
 
 function reportGoal(team){
-  celebrating = true; celebrationStart = performance.now(); celebrationTeam = team;
+  celebrating = true;
+  celebrationStart = performance.now();
+  celebrationTeam = team;
+  ball.vx = 0; ball.vy = 0;
   socket.emit('goal', { roomId: currentRoom.id, team });
 }
 
@@ -624,7 +640,10 @@ function loop(){
     if(celebrating){
       const elapsed = performance.now()-celebrationStart;
       render(); drawGoalCelebration(elapsed);
-      if(elapsed >= CELEBRATION_MS){ celebrating=false; }
+      if(elapsed >= CELEBRATION_MS){
+        celebrating = false;
+        resetPositions(); // bola e discos voltam à formação inicial no centro do campo
+      }
     } else {
       physicsStep();
       render();
@@ -648,6 +667,7 @@ setInterval(() => {
 
 socket.on('state_sync', (state) => {
   if(myTeam === 'A') return;
+  if(celebrating) return; // durante a celebração cada lado usa a formação local determinística
   if(state.ball) Object.assign(ball, state.ball);
   if(state.discs){
     state.discs.forEach(sd => {
