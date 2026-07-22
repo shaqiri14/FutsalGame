@@ -24,10 +24,24 @@ function saveRankings(data){
 }
 let rankings = loadRankings();
 
-function recordResult(nameA, nameB, winner){
-  for (const n of [nameA, nameB]){
-    if(!rankings[n]) rankings[n] = { wins: 0, losses: 0, draws: 0 };
+function ensurePlayer(name){
+  if(!rankings[name]){
+    rankings[name] = { wins: 0, losses: 0, draws: 0, golosMarcados: 0, golosSofridos: 0 };
   }
+  // migração defensiva para entradas antigas do rankings.json sem estes campos
+  if(rankings[name].golosMarcados === undefined) rankings[name].golosMarcados = 0;
+  if(rankings[name].golosSofridos === undefined) rankings[name].golosSofridos = 0;
+}
+
+function recordResult(nameA, nameB, scoreA, scoreB, winner){
+  ensurePlayer(nameA);
+  ensurePlayer(nameB);
+
+  rankings[nameA].golosMarcados += scoreA;
+  rankings[nameA].golosSofridos += scoreB;
+  rankings[nameB].golosMarcados += scoreB;
+  rankings[nameB].golosSofridos += scoreA;
+
   if(winner === 'draw'){
     rankings[nameA].draws++; rankings[nameB].draws++;
   } else {
@@ -41,11 +55,16 @@ function recordResult(nameA, nameB, winner){
 
 function rankingList(){
   return Object.entries(rankings)
-    .map(([name, r]) => ({
-      name, wins: r.wins, losses: r.losses, draws: r.draws,
-      points: r.wins*3 + r.draws, played: r.wins + r.losses + r.draws
-    }))
-    .sort((a,b) => b.points - a.points || b.wins - a.wins);
+    .map(([name, r]) => {
+      const golosMarcados = r.golosMarcados || 0;
+      const golosSofridos = r.golosSofridos || 0;
+      return {
+        name, wins: r.wins, losses: r.losses, draws: r.draws,
+        golosMarcados, golosSofridos, saldo: golosMarcados - golosSofridos,
+        points: r.wins*3 + r.draws, played: r.wins + r.losses + r.draws
+      };
+    })
+    .sort((a,b) => b.points - a.points || b.saldo - a.saldo || b.golosMarcados - a.golosMarcados);
 }
 
 // --- chat público (histórico simples em memória) ---
@@ -185,6 +204,9 @@ io.on('connection', (socket) => {
     socket.to(payload.roomId).emit('state_sync', payload);
   });
 
+  // o golo só é validado a partir da equipa A (autoridade da física); o número de
+  // golos necessários para terminar o jogo é sempre o "bestOf" definido por quem
+  // criou a sala (ex.: bestOf=5 -> o primeiro a chegar a 5 golos ganha)
   socket.on('goal', ({ roomId, team }) => {
     const room = rooms.get(roomId);
     if(!room || room.status !== 'playing') return;
@@ -197,14 +219,16 @@ io.on('connection', (socket) => {
     const target = Math.ceil(room.bestOf);
     const finished = room.scoreA >= target || room.scoreB >= target;
 
-    io.to(roomId).emit('score_update', { scoreA: room.scoreA, scoreB: room.scoreB, turn: room.turn, finished });
+    io.to(roomId).emit('score_update', {
+      scoreA: room.scoreA, scoreB: room.scoreB, turn: room.turn, finished, scoringTeam: team
+    });
 
     if(finished){
       room.status = 'finished';
       const nameA = room.players.find(p=>p.team==='A').name;
       const nameB = room.players.find(p=>p.team==='B').name;
       const winner = room.scoreA === room.scoreB ? 'draw' : (room.scoreA > room.scoreB ? 'A' : 'B');
-      recordResult(nameA, nameB, winner);
+      recordResult(nameA, nameB, room.scoreA, room.scoreB, winner);
       io.to(roomId).emit('match_over', { winner, scoreA: room.scoreA, scoreB: room.scoreB });
       io.emit('rankings', rankingList());
       rooms.delete(roomId);
