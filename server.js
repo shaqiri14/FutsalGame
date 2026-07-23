@@ -14,6 +14,18 @@ const RANKINGS_FILE = path.join(__dirname, 'data', 'rankings.json');
 const RECONNECT_GRACE_MS = 10000; // tempo de tolerância para voltar depois de um refresh/queda de ligação
 const PIN_REGEX = /^\d{4,6}$/;
 
+// coordenadas do campo (têm de bater certo com as do public/js/game.js) — usadas
+// só para decidir se uma falta aconteceu dentro da grande área (= pénalti)
+const PITCH_W = 760, PITCH_H = 480;
+const PITCH_FIELD_LEFT = 34, PITCH_FIELD_RIGHT = PITCH_W - 34;
+const BOX_W = 70, BOX_H = 140;
+function insideOwnBox(team, x, y){
+  const top = PITCH_H/2 - BOX_H/2, bottom = PITCH_H/2 + BOX_H/2;
+  if(y < top || y > bottom) return false;
+  if(team === 'A') return x >= PITCH_FIELD_LEFT && x <= PITCH_FIELD_LEFT + BOX_W;
+  return x <= PITCH_FIELD_RIGHT && x >= PITCH_FIELD_RIGHT - BOX_W;
+}
+
 // --- ranking persistido em ficheiro JSON (fácil de trocar por PostgreSQL depois) ---
 function loadRankings(){
   try{ return JSON.parse(fs.readFileSync(RANKINGS_FILE, 'utf8')); }
@@ -76,7 +88,8 @@ let chatHistory = [];
 
 // --- salas em memória ---
 const rooms = new Map();
-// room: { id, name, bestOf, players:[{id,token,name,rankKey,team,connected}], scoreA, scoreB, turn, status, disconnectTimer }
+// room: { id, name, bestOf, players:[{id,token,name,rankKey,team,connected}], scoreA, scoreB, turn,
+//         status: 'waiting'|'playing'|'penalty'|'finished', penalty, disconnectTimer }
 
 function publicRoomList(){
   return [...rooms.values()]
@@ -173,6 +186,7 @@ io.on('connection', (socket) => {
       bestOf: Math.min(Math.max(parseInt(bestOf) || 1, 1), 21),
       players: [{ id: socket.id, token: socket.data.token, name: socket.data.name, rankKey: socket.data.rankKey, team: 'A', connected: true }],
       scoreA: 0, scoreB: 0, turn: 'A', status: 'waiting',
+      penalty: null,
       disconnectTimer: null
     };
     rooms.set(id, room);
@@ -245,10 +259,75 @@ io.on('connection', (socket) => {
 
   socket.on('state_sync', (payload) => {
     const room = rooms.get(payload.roomId);
-    if(!room || room.status !== 'playing') return;
+    if(!room || (room.status !== 'playing' && room.status !== 'penalty')) return;
     const me = room.players.find(p => p.id === socket.id);
     if(!me || me.team !== 'A') return;
     socket.to(payload.roomId).emit('state_sync', payload);
+  });
+
+  // --- faltas e pénaltis ---
+  // só a equipa A (autoridade da física) reporta uma falta, tal como já acontecia com os golos.
+  // o servidor decide se é livre normal ou pénalti consoante a posição (dentro da própria grande área).
+  socket.on('foul', ({ roomId, offendingTeam, x, y }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'playing') return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== 'A') return;
+    if(offendingTeam !== 'A' && offendingTeam !== 'B') return;
+
+    const fouledTeam = offendingTeam === 'A' ? 'B' : 'A';
+    const isPenalty = insideOwnBox(offendingTeam, x, y);
+
+    if(isPenalty){
+      room.status = 'penalty';
+      room.penalty = { fouledTeam, offendingTeam, keeperChoice: null, shot: null };
+      io.to(roomId).emit('foul_called', { isPenalty: true, offendingTeam, fouledTeam });
+    } else {
+      room.turn = fouledTeam;
+      io.to(roomId).emit('foul_called', { isPenalty: false, offendingTeam, fouledTeam, x, y });
+    }
+  });
+
+  function maybeResolvePenalty(room, roomId){
+    if(room.penalty && room.penalty.keeperChoice && room.penalty.shot){
+      io.to(roomId).emit('penalty_ready', { keeperChoice: room.penalty.keeperChoice, shot: room.penalty.shot });
+    }
+  }
+
+  // o defesa (equipa que cometeu a falta) escolhe para onde o guarda-redes se atira
+  socket.on('penalty_keeper_choice', ({ roomId, side }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'penalty' || !room.penalty) return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== room.penalty.offendingTeam) return;
+    if(!['top','center','bottom'].includes(side)) return;
+    if(room.penalty.keeperChoice) return; // já escolheu, ignora repetições
+    room.penalty.keeperChoice = side;
+    maybeResolvePenalty(room, roomId);
+  });
+
+  // o atacante (equipa lesada) faz o remate — só arranca quando o guarda-redes também já escolheu
+  socket.on('penalty_shot', ({ roomId, vx, vy }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'penalty' || !room.penalty) return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== room.penalty.fouledTeam) return;
+    if(room.penalty.shot) return; // já rematou, ignora repetições
+    room.penalty.shot = { vx, vy };
+    maybeResolvePenalty(room, roomId);
+  });
+
+  // a equipa A confirma que o pénalti terminou sem golo (defendido ou fora) para retomar o jogo normal
+  socket.on('penalty_missed', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'penalty') return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== 'A') return;
+    const nextTurn = room.penalty ? room.penalty.offendingTeam : 'A';
+    room.status = 'playing';
+    room.penalty = null;
+    room.turn = nextTurn;
+    io.to(roomId).emit('penalty_over', { turn: nextTurn });
   });
 
   // o golo só é validado a partir da equipa A (autoridade da física); o número de
@@ -256,9 +335,14 @@ io.on('connection', (socket) => {
   // criou a sala (ex.: bestOf=5 -> o primeiro a chegar a 5 golos ganha)
   socket.on('goal', ({ roomId, team }) => {
     const room = rooms.get(roomId);
-    if(!room || room.status !== 'playing') return;
+    if(!room || room.status === 'finished') return;
     const me = room.players.find(p => p.id === socket.id);
     if(!me || me.team !== 'A') return;
+
+    if(room.status === 'penalty'){
+      room.status = 'playing';
+      room.penalty = null;
+    }
 
     if(team === 'A') room.scoreA++; else room.scoreB++;
     room.turn = 'A';
