@@ -21,14 +21,14 @@
   <section id="screen-name" class="screen active">
     <div class="card">
       <div class="brand">Futsal Game</div>
-      <p class="sub">Futebol de mesa online. Escolhe o teu nome para começar.</p>
+      <p class="sub">Futebol de mesa online. Escolhe o teu nome e um PIN para começar.</p>
       <input id="nameInput" maxlength="20" placeholder="O teu nome" autocomplete="off">
-      <p class="sub" style="font-size:13px; opacity:0.85; margin-top:8px; text-align:left;">
-        Vais também escolher um PIN. Da primeira vez que usares um nome, esse PIN fica ligado a ele —
-        tens de usar o mesmo PIN para continuares a somar vitórias/golos a essa conta. Se alguém tentar
-        usar o teu nome com um PIN diferente, é recusado.
-      </p>
       <input id="pinInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="PIN (4 a 6 números)" autocomplete="off">
+      <p class="sub" style="font-size:13px; opacity:0.8; margin-top:4px;">
+        O PIN protege o teu lugar no ranking: da primeira vez que usares este nome, o PIN fica ligado a ele.
+        Da próxima vez que jogares, usa o mesmo nome + PIN para continuares a somar as tuas vitórias, derrotas e golos —
+        assim ninguém consegue usar o teu nome e mexer no teu histórico.
+      </p>
       <div id="nameError" style="display:none; color:#e0473b; font-size:13px; margin-top:6px; font-weight:bold;"></div>
       <button id="btnSetName">Entrar</button>
     </div>
@@ -57,6 +57,10 @@
         <label>Vai até quantos golos</label>
         <input id="bestOfInput" type="number" min="1" max="21" value="5">
         <button id="btnCreateRoom">Criar sala</button>
+
+        <div class="local-divider">ou</div>
+        <button id="btnLocalMode" class="ghost">Jogar 2 no mesmo ecrã</button>
+        <p class="hint" style="margin-top:6px;">Sem internet nem sala — os dois jogadores revezam-se no mesmo telemóvel/PC.</p>
       </div>
 
       <div class="panel">
@@ -79,7 +83,7 @@
 
   <!-- JOGO -->
   <section id="screen-game" class="screen">
-    <div class="frame" style="position:relative;">
+    <div class="frame">
       <div id="reconnectBanner" class="reconnect-banner" style="display:none;">
         O adversário perdeu a ligação — a aguardar reconexão…
       </div>
@@ -95,35 +99,7 @@
         <span class="vs">vs</span>
         <span class="p-b" id="labelB">Azul</span>
       </div>
-      <div id="foulsBadge" style="text-align:center; font-family:'Space Mono',monospace; font-size:12px; opacity:0.85; margin:2px 0 6px;">Faltas: Vermelho 0 — Azul 0</div>
       <canvas id="pitch" width="760" height="480"></canvas>
-
-      <!-- overlay do livre de 10 metros -->
-      <div id="penaltyOverlay" style="display:none; position:absolute; inset:0; background:rgba(10,15,10,0.72); align-items:center; justify-content:center; z-index:40;">
-        <div style="background:#141a14; border:2px solid #d4af37; border-radius:10px; padding:20px 24px; max-width:320px; text-align:center; font-family:'Space Mono',monospace; color:#f2efe4;">
-          <div style="font-family:'Anton',sans-serif; font-size:26px; color:#d4af37; margin-bottom:10px;">LIVRE DE 10 METROS!</div>
-
-          <div id="penaltyKeeperControls" style="display:none;">
-            <p style="font-size:13px; margin-bottom:10px;">És o guarda-redes. Escolhe para que lado te vais atirar:</p>
-            <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
-              <button data-side="top" style="padding:10px 14px;">Cima</button>
-              <button data-side="center" style="padding:10px 14px;">Centro</button>
-              <button data-side="bottom" style="padding:10px 14px;">Baixo</button>
-            </div>
-          </div>
-
-          <div id="penaltyShooterWait" style="display:none; font-size:13px;">
-            O guarda-redes está a decidir o lado. Aguarda a tua vez de rematar…
-          </div>
-
-          <div id="penaltyShooterHint" style="display:none; font-size:13px;">
-            Já podes rematar! Arrasta o teu jogador e larga para chutar.
-          </div>
-
-          <div id="penaltyWaiting" style="display:none; font-size:13px;">A aguardar o adversário…</div>
-        </div>
-      </div>
-
       <div class="footer">
         <div class="power-wrap">
           <label for="powerSlider">Força</label>
