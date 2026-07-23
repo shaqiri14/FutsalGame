@@ -12,6 +12,7 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const RANKINGS_FILE = path.join(__dirname, 'data', 'rankings.json');
 const RECONNECT_GRACE_MS = 10000; // tempo de tolerância para voltar depois de um refresh/queda de ligação
+const PIN_REGEX = /^\d{4,6}$/;
 
 // --- ranking persistido em ficheiro JSON (fácil de trocar por PostgreSQL depois) ---
 function loadRankings(){
@@ -23,43 +24,45 @@ function saveRankings(data){
   fs.writeFileSync(RANKINGS_FILE, JSON.stringify(data, null, 2));
 }
 let rankings = loadRankings();
+// cada entrada em "rankings" é indexada por chave normalizada (nome em minúsculas, sem espaços à volta):
+// rankings[key] = { displayName, pinSalt, pinHash, wins, losses, draws, golosMarcados, golosSofridos }
 
-function ensurePlayer(name){
-  if(!rankings[name]){
-    rankings[name] = { wins: 0, losses: 0, draws: 0, golosMarcados: 0, golosSofridos: 0 };
-  }
-  // migração defensiva para entradas antigas do rankings.json sem estes campos
-  if(rankings[name].golosMarcados === undefined) rankings[name].golosMarcados = 0;
-  if(rankings[name].golosSofridos === undefined) rankings[name].golosSofridos = 0;
+function hashPin(pin, salt){
+  return crypto.scryptSync(pin, salt, 64).toString('hex');
+}
+function verifyPin(pin, salt, hash){
+  const test = Buffer.from(hashPin(pin, salt), 'hex');
+  const real = Buffer.from(hash, 'hex');
+  if(test.length !== real.length) return false;
+  return crypto.timingSafeEqual(test, real);
 }
 
-function recordResult(nameA, nameB, scoreA, scoreB, winner){
-  ensurePlayer(nameA);
-  ensurePlayer(nameB);
+function recordResult(keyA, keyB, scoreA, scoreB, winner){
+  const a = rankings[keyA], b = rankings[keyB];
+  if(!a || !b) return; // segurança: não deviam faltar, mas evita crash
 
-  rankings[nameA].golosMarcados += scoreA;
-  rankings[nameA].golosSofridos += scoreB;
-  rankings[nameB].golosMarcados += scoreB;
-  rankings[nameB].golosSofridos += scoreA;
+  a.golosMarcados = (a.golosMarcados||0) + scoreA;
+  a.golosSofridos = (a.golosSofridos||0) + scoreB;
+  b.golosMarcados = (b.golosMarcados||0) + scoreB;
+  b.golosSofridos = (b.golosSofridos||0) + scoreA;
 
   if(winner === 'draw'){
-    rankings[nameA].draws++; rankings[nameB].draws++;
+    a.draws++; b.draws++;
+  } else if(winner === 'A'){
+    a.wins++; b.losses++;
   } else {
-    const winnerName = winner === 'A' ? nameA : nameB;
-    const loserName = winner === 'A' ? nameB : nameA;
-    rankings[winnerName].wins++;
-    rankings[loserName].losses++;
+    b.wins++; a.losses++;
   }
   saveRankings(rankings);
 }
 
 function rankingList(){
-  return Object.entries(rankings)
-    .map(([name, r]) => {
+  return Object.values(rankings)
+    .map(r => {
       const golosMarcados = r.golosMarcados || 0;
       const golosSofridos = r.golosSofridos || 0;
       return {
-        name, wins: r.wins, losses: r.losses, draws: r.draws,
+        name: r.displayName, wins: r.wins, losses: r.losses, draws: r.draws,
         golosMarcados, golosSofridos, saldo: golosMarcados - golosSofridos,
         points: r.wins*3 + r.draws, played: r.wins + r.losses + r.draws
       };
@@ -73,7 +76,7 @@ let chatHistory = [];
 
 // --- salas em memória ---
 const rooms = new Map();
-// room: { id, name, bestOf, players:[{id,token,name,team,connected}], scoreA, scoreB, turn, status, disconnectTimer }
+// room: { id, name, bestOf, players:[{id,token,name,rankKey,team,connected}], scoreA, scoreB, turn, status, disconnectTimer }
 
 function publicRoomList(){
   return [...rooms.values()]
@@ -91,13 +94,55 @@ app.get('/health', (req, res) => res.send('ok'));
 
 io.on('connection', (socket) => {
   socket.data.name = null;
+  socket.data.rankKey = null;
   socket.data.roomId = null;
   socket.data.token = null;
 
-  socket.on('set_name', ({ name, token } = {}) => {
+  // nome + PIN identificam a conta de ranking. Da primeira vez que um nome é usado,
+  // o PIN fica associado a ele; nas vezes seguintes tem de bater certo com o mesmo
+  // nome para continuar a somar vitórias/derrotas/golos a essa mesma conta.
+  socket.on('set_name', ({ name, pin, token } = {}) => {
     const clean = String(name || '').trim().slice(0, 20);
-    socket.data.name = clean || 'Jogador';
+    const cleanPin = String(pin || '').trim();
+
+    if(!clean){
+      socket.emit('set_name_failed', { reason: 'no_name' });
+      return;
+    }
+    if(!PIN_REGEX.test(cleanPin)){
+      socket.emit('set_name_failed', { reason: 'invalid_pin' });
+      return;
+    }
+
+    const key = clean.toLowerCase();
+    let entry = rankings[key];
+
+    if(entry){
+      if(!entry.pinHash){
+        // conta antiga, criada antes de existir PIN — associa este PIN agora
+        entry.pinSalt = crypto.randomBytes(16).toString('hex');
+        entry.pinHash = hashPin(cleanPin, entry.pinSalt);
+        entry.displayName = clean;
+        saveRankings(rankings);
+      } else if(!verifyPin(cleanPin, entry.pinSalt, entry.pinHash)){
+        socket.emit('set_name_failed', { reason: 'wrong_pin' });
+        return;
+      }
+    } else {
+      entry = rankings[key] = {
+        displayName: clean,
+        pinSalt: crypto.randomBytes(16).toString('hex'),
+        pinHash: '',
+        wins: 0, losses: 0, draws: 0, golosMarcados: 0, golosSofridos: 0
+      };
+      entry.pinHash = hashPin(cleanPin, entry.pinSalt);
+      saveRankings(rankings);
+    }
+
+    socket.data.name = entry.displayName;
+    socket.data.rankKey = key;
     socket.data.token = token || crypto.randomBytes(8).toString('hex');
+
     socket.emit('name_ok', { name: socket.data.name, token: socket.data.token });
     socket.emit('rooms', publicRoomList());
     socket.emit('rankings', rankingList());
@@ -126,7 +171,7 @@ io.on('connection', (socket) => {
       id,
       name: String(roomName || 'Sala').trim().slice(0, 30) || 'Sala',
       bestOf: Math.min(Math.max(parseInt(bestOf) || 1, 1), 21),
-      players: [{ id: socket.id, token: socket.data.token, name: socket.data.name, team: 'A', connected: true }],
+      players: [{ id: socket.id, token: socket.data.token, name: socket.data.name, rankKey: socket.data.rankKey, team: 'A', connected: true }],
       scoreA: 0, scoreB: 0, turn: 'A', status: 'waiting',
       disconnectTimer: null
     };
@@ -143,7 +188,7 @@ io.on('connection', (socket) => {
       socket.emit('join_failed', 'Sala indisponível.');
       return;
     }
-    room.players.push({ id: socket.id, token: socket.data.token, name: socket.data.name, team: 'B', connected: true });
+    room.players.push({ id: socket.id, token: socket.data.token, name: socket.data.name, rankKey: socket.data.rankKey, team: 'B', connected: true });
     socket.join(roomId);
     socket.data.roomId = roomId;
     room.status = 'playing';
@@ -174,6 +219,8 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socket.data.roomId = roomId;
     socket.data.token = token;
+    socket.data.rankKey = player.rankKey;
+    socket.data.name = player.name;
 
     const opponent = room.players.find(p => p.token !== token);
     socket.emit('rejoin_ok', {
@@ -225,10 +272,10 @@ io.on('connection', (socket) => {
 
     if(finished){
       room.status = 'finished';
-      const nameA = room.players.find(p=>p.team==='A').name;
-      const nameB = room.players.find(p=>p.team==='B').name;
+      const playerA = room.players.find(p=>p.team==='A');
+      const playerB = room.players.find(p=>p.team==='B');
       const winner = room.scoreA === room.scoreB ? 'draw' : (room.scoreA > room.scoreB ? 'A' : 'B');
-      recordResult(nameA, nameB, room.scoreA, room.scoreB, winner);
+      recordResult(playerA.rankKey, playerB.rankKey, room.scoreA, room.scoreB, winner);
       io.to(roomId).emit('match_over', { winner, scoreA: room.scoreA, scoreB: room.scoreB });
       io.emit('rankings', rankingList());
       rooms.delete(roomId);
