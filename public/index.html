@@ -17,12 +17,19 @@
 
 <div class="app">
 
-  <!-- NOME -->
+  <!-- NOME + PIN -->
   <section id="screen-name" class="screen active">
     <div class="card">
       <div class="brand">Futsal Game</div>
-      <p class="sub">Futebol de mesa online. Escolhe o teu nome para começar.</p>
+      <p class="sub">Futebol de mesa online. Escolhe o teu nome e um PIN para começar.</p>
       <input id="nameInput" maxlength="20" placeholder="O teu nome" autocomplete="off">
+      <input id="pinInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="PIN (4 a 6 números)" autocomplete="off">
+      <p class="sub" style="font-size:13px; opacity:0.8; margin-top:4px;">
+        O PIN protege o teu lugar no ranking: da primeira vez que usares este nome, o PIN fica ligado a ele.
+        Da próxima vez que jogares, usa o mesmo nome + PIN para continuares a somar as tuas vitórias, derrotas e golos —
+        assim ninguém consegue usar o teu nome e mexer no teu histórico.
+      </p>
+      <div id="nameError" style="display:none; color:#e0473b; font-size:13px; margin-top:6px; font-weight:bold;"></div>
       <button id="btnSetName">Entrar</button>
     </div>
   </section>
@@ -119,7 +126,7 @@
     <div class="panel wide">
       <table id="rankingTable">
         <thead>
-          <tr><th>#</th><th>Jogador</th><th>V</th><th>E</th><th>D</th><th>Pts</th></tr>
+          <tr><th>#</th><th>Jogador</th><th>V</th><th>E</th><th>D</th><th>GM</th><th>GS</th><th>SG</th><th>Pts</th></tr>
         </thead>
         <tbody></tbody>
       </table>
