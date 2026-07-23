@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 3000;
 const RANKINGS_FILE = path.join(__dirname, 'data', 'rankings.json');
 const RECONNECT_GRACE_MS = 10000; // tempo de tolerância para voltar depois de um refresh/queda de ligação
 const PIN_REGEX = /^\d{4,6}$/;
+const FOULS_FOR_TEN_METER = 6; // a partir da 6ª falta acumulada da mesma equipa
 
 // --- ranking persistido em ficheiro JSON (fácil de trocar por PostgreSQL depois) ---
 function loadRankings(){
@@ -77,7 +78,7 @@ let chatHistory = [];
 // --- salas em memória ---
 const rooms = new Map();
 // room: { id, name, bestOf, players:[{id,token,name,rankKey,team,connected}], scoreA, scoreB, turn,
-//         status: 'waiting'|'playing'|'finished', disconnectTimer }
+//         status: 'waiting'|'playing'|'penalty'|'finished', fouls:{A,B}, penalty, disconnectTimer }
 
 function publicRoomList(){
   return [...rooms.values()]
@@ -174,6 +175,8 @@ io.on('connection', (socket) => {
       bestOf: Math.min(Math.max(parseInt(bestOf) || 1, 1), 21),
       players: [{ id: socket.id, token: socket.data.token, name: socket.data.name, rankKey: socket.data.rankKey, team: 'A', connected: true }],
       scoreA: 0, scoreB: 0, turn: 'A', status: 'waiting',
+      fouls: { A: 0, B: 0 },
+      penalty: null,
       disconnectTimer: null
     };
     rooms.set(id, room);
@@ -246,25 +249,84 @@ io.on('connection', (socket) => {
 
   socket.on('state_sync', (payload) => {
     const room = rooms.get(payload.roomId);
-    if(!room || room.status !== 'playing') return;
+    if(!room || (room.status !== 'playing' && room.status !== 'penalty')) return;
     const me = room.players.find(p => p.id === socket.id);
     if(!me || me.team !== 'A') return;
     socket.to(payload.roomId).emit('state_sync', payload);
   });
 
-  // --- faltas ---
-  // quem decide se é falta normal ou pénalti (consoante o local do choque, dentro
-  // ou fora da grande área) é sempre a equipa A, autoridade da física — o servidor
-  // só regista de quem passa a ser a vez e retransmite a decisão para o adversário.
-  socket.on('foul', ({ roomId, fouledTeam, spot, isPenalty }) => {
+  // --- faltas e livre de 10 metros ---
+  // só a equipa A (autoridade da física) reporta uma falta, tal como já acontecia com os golos.
+  // conta-se as faltas por equipa; a partir da 6ª falta da mesma equipa, em vez de livre normal
+  // é sempre livre de 10 metros (bola parada em frente à baliza, só o guarda-redes defende).
+  socket.on('foul', ({ roomId, offendingTeam, x, y, offenderDiscId, victimDiscId }) => {
     const room = rooms.get(roomId);
     if(!room || room.status !== 'playing') return;
     const me = room.players.find(p => p.id === socket.id);
     if(!me || me.team !== 'A') return;
-    if(fouledTeam !== 'A' && fouledTeam !== 'B') return;
+    if(offendingTeam !== 'A' && offendingTeam !== 'B') return;
 
-    room.turn = fouledTeam;
-    socket.to(roomId).emit('foul_called', { fouledTeam, spot, isPenalty });
+    const fouledTeam = offendingTeam === 'A' ? 'B' : 'A';
+    room.fouls[offendingTeam] = (room.fouls[offendingTeam] || 0) + 1;
+    const isTenMeter = room.fouls[offendingTeam] >= FOULS_FOR_TEN_METER;
+
+    io.to(roomId).emit('fouls_update', { fouls: room.fouls });
+
+    if(isTenMeter){
+      room.status = 'penalty'; // reaproveita o mesmo estado interno da bola parada com guarda-redes
+      room.penalty = { fouledTeam, offendingTeam, keeperChoice: null, shot: null };
+      io.to(roomId).emit('foul_called', { isTenMeter: true, offendingTeam, fouledTeam });
+    } else {
+      room.turn = fouledTeam;
+      io.to(roomId).emit('foul_called', {
+        isTenMeter: false, offendingTeam, fouledTeam, x, y, offenderDiscId, victimDiscId
+      });
+    }
+  });
+
+  function maybeResolvePenalty(room, roomId){
+    if(room.penalty && room.penalty.keeperChoice && room.penalty.shot){
+      io.to(roomId).emit('penalty_ready', { keeperChoice: room.penalty.keeperChoice, shot: room.penalty.shot });
+    }
+  }
+
+  // o guarda-redes (equipa que cometeu as faltas) escolhe SEMPRE primeiro para que lado se atira —
+  // mas só se mexe de facto no momento do remate (ver 'penalty_ready' no cliente)
+  socket.on('penalty_keeper_choice', ({ roomId, side }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'penalty' || !room.penalty) return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== room.penalty.offendingTeam) return;
+    if(!['top','center','bottom'].includes(side)) return;
+    if(room.penalty.keeperChoice) return; // já escolheu, ignora repetições
+    room.penalty.keeperChoice = side;
+    io.to(roomId).emit('penalty_keeper_ready'); // avisa que já pode haver remate
+    maybeResolvePenalty(room, roomId);
+  });
+
+  // o rematador (equipa lesada) só pode rematar depois do guarda-redes já ter escolhido
+  socket.on('penalty_shot', ({ roomId, vx, vy }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'penalty' || !room.penalty) return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== room.penalty.fouledTeam) return;
+    if(!room.penalty.keeperChoice) return; // guarda-redes ainda não escolheu — remate inválido
+    if(room.penalty.shot) return; // já rematou, ignora repetições
+    room.penalty.shot = { vx, vy };
+    maybeResolvePenalty(room, roomId);
+  });
+
+  // a equipa A confirma que o livre de 10 metros terminou sem golo (defendido ou fora) para retomar o jogo
+  socket.on('penalty_missed', ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if(!room || room.status !== 'penalty') return;
+    const me = room.players.find(p => p.id === socket.id);
+    if(!me || me.team !== 'A') return;
+    const nextTurn = room.penalty ? room.penalty.offendingTeam : 'A';
+    room.status = 'playing';
+    room.penalty = null;
+    room.turn = nextTurn;
+    io.to(roomId).emit('penalty_over', { turn: nextTurn });
   });
 
   // o golo só é validado a partir da equipa A (autoridade da física); o número de
@@ -276,9 +338,13 @@ io.on('connection', (socket) => {
     const me = room.players.find(p => p.id === socket.id);
     if(!me || me.team !== 'A') return;
 
+    if(room.status === 'penalty'){
+      room.status = 'playing';
+      room.penalty = null;
+    }
+
     if(team === 'A') room.scoreA++; else room.scoreB++;
-    // quem SOFRE o golo é quem repõe a bola no meio-campo, não quem marcou
-    room.turn = team === 'A' ? 'B' : 'A';
+    room.turn = 'A';
 
     const target = Math.ceil(room.bestOf);
     const finished = room.scoreA >= target || room.scoreB >= target;
