@@ -371,7 +371,8 @@ const GOAL_W = 120;
 const isMobile = window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
 
 const DISC_FRICTION = 0.983;
-const BALL_FRICTION = 0.986;
+// atrito da bola: quanto mais perto de 1, mais tempo/distância a bola desliza antes de parar
+const BALL_FRICTION = 0.992;
 const MIN_SPEED = 0.02;
 const MAX_SPEED_DISC = 7;
 const MAX_SPEED_BALL = 13;
@@ -462,8 +463,9 @@ function drawGoal(isLeft){
   ctx.save();
   ctx.beginPath(); ctx.rect(boxX, GOAL_TOP_Y, boxW, GOAL_W); ctx.clip();
   const backX = isLeft ? boxX : boxX+boxW;
+  // fundo da rede em tom escuro neutro (combina com o piso em madeira)
   const grad = ctx.createLinearGradient(backX, 0, isLeft ? boxX+boxW : boxX, 0);
-  grad.addColorStop(0, '#0d2814'); grad.addColorStop(1, '#1c4a29');
+  grad.addColorStop(0, '#161210'); grad.addColorStop(1, '#332720');
   ctx.fillStyle = grad; ctx.fillRect(boxX, GOAL_TOP_Y, boxW, GOAL_W);
 
   ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1;
@@ -489,10 +491,16 @@ function drawGoal(isLeft){
 }
 
 function drawPitch(){
+  // piso tipo pavilhão de futsal (tacos de madeira), em vez de relva
   const stripeCount = 12, stripeW = W/stripeCount;
   for(let i=0;i<stripeCount;i++){
-    ctx.fillStyle = i%2===0 ? '#1e4d2b' : '#245a33';
+    ctx.fillStyle = i%2===0 ? '#c9975b' : '#bd8a4c';
     ctx.fillRect(i*stripeW,0,stripeW,H);
+  }
+  // veio de madeira subtil sobre as faixas
+  ctx.strokeStyle = 'rgba(90,58,26,0.15)'; ctx.lineWidth = 1;
+  for(let i=1;i<stripeCount;i++){
+    ctx.beginPath(); ctx.moveTo(i*stripeW,0); ctx.lineTo(i*stripeW,H); ctx.stroke();
   }
   drawGoal(true); drawGoal(false);
   ctx.strokeStyle = '#eef0e6'; ctx.lineWidth = 2.5;
@@ -617,7 +625,23 @@ canvas.addEventListener('pointerdown', (e)=>{
   if(inPenalty){
     if(activePointers.size !== 1) return;
     if(penaltyRole !== 'shooter' || penaltyCommitted || !penaltyKeeperReady) return;
-    if(Math.hypot(penaltyShooterDisc.x-pos.x, penaltyShooterDisc.y-pos.y) < penaltyShooterDisc.r+(isMobile?22:8)){
+
+    // no telemóvel usamos o mesmo esquema em duas fases do resto do jogo:
+    // 1º toque no jogador para o selecionar, 2º toque em qualquer lado do ecrã para apontar.
+    // Isto evita ter de acertar sempre em cima do disco com o dedo (que também tapa a mira).
+    if(isMobile){
+      if(selectedDisc === penaltyShooterDisc){
+        dragging = penaltyShooterDisc; dragStart = { x: dragging.x, y: dragging.y };
+        maxFingers = 1; posBuffer = [{x:pos.x,y:pos.y,t:performance.now()}]; mouse = pos;
+        return;
+      }
+      if(Math.hypot(penaltyShooterDisc.x-pos.x, penaltyShooterDisc.y-pos.y) < penaltyShooterDisc.r+22){
+        selectedDisc = penaltyShooterDisc;
+      }
+      return;
+    }
+
+    if(Math.hypot(penaltyShooterDisc.x-pos.x, penaltyShooterDisc.y-pos.y) < penaltyShooterDisc.r+8){
       dragging = penaltyShooterDisc; dragStart = { x: dragging.x, y: dragging.y };
       maxFingers = 1; posBuffer = [{x:pos.x,y:pos.y,t:performance.now()}]; mouse = pos;
     }
@@ -817,11 +841,13 @@ function physicsStep(){
     }
   }
 
-  // golo: assim que o CENTRO da bola cruza a linha, é reportado de imediato e a física
-  // congela nesse mesmo frame — impede que a bola bata na rede e volte a sair para o campo
+  // golo: só conta quando a bola PASSOU TODA a linha (o bordo de trás da bola já
+  // está para lá da linha), e não apenas quando o centro a cruza. Assim que isso
+  // acontece é reportado de imediato e a física congela nesse mesmo frame — impede
+  // que a bola bata na rede e volte a sair para o campo antes de ser validado o golo
   if(myTeam === 'A' && currentRoom && !celebrating){
-    if(ball.x < FIELD_LEFT){ reportGoal('B'); }
-    else if(ball.x > FIELD_RIGHT){ reportGoal('A'); }
+    if(ball.x + ball.r < FIELD_LEFT){ reportGoal('B'); }
+    else if(ball.x - ball.r > FIELD_RIGHT){ reportGoal('A'); }
   }
 }
 
@@ -944,6 +970,7 @@ function startTenMeterKick(offendingTeam, fouledTeam){
   penaltyFouledTeam = fouledTeam;
   penaltyKickActive = true;
   activeShotDiscId = null;
+  selectedDisc = null;
 
   const shootingRight = fouledTeam === 'A'; // A ataca a baliza direita (de B)
   const spotX = shootingRight ? FIELD_RIGHT - BOX_W - TEN_METER_GAP : FIELD_LEFT + BOX_W + TEN_METER_GAP;
@@ -1008,6 +1035,7 @@ socket.on('penalty_ready', ({ keeperChoice, shot }) => {
   hidePenaltyOverlay();
   penaltyRole = null;
   penaltyCommitted = false;
+  selectedDisc = null;
 
   ball.vx = shot.vx; ball.vy = shot.vy;
 
