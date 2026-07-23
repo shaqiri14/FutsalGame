@@ -6,6 +6,11 @@ let myPin = null;
 let myTeam = null;
 let currentRoom = null;
 
+// ---- modo local (2 jogadores no mesmo ecrã, sem servidor) ----
+let localMode = false;
+let localBestOf = 5;
+let localMatchOver = null; // { a, b } quando o jogo local terminou, à espera da celebração acabar
+
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -89,6 +94,7 @@ window.addEventListener('load', () => {
 });
 
 socket.on('rejoin_ok', ({ room, myTeam: team, players, scoreA: a, scoreB: b, turn: t }) => {
+  localMode = false;
   currentRoom = room;
   myTeam = team;
   saveSession();
@@ -116,6 +122,30 @@ document.getElementById('btnCreateRoom').addEventListener('click', () => {
   const bestOf = document.getElementById('bestOfInput').value || 5;
   socket.emit('create_room', { roomName, bestOf });
 });
+
+// ---- modo local: 2 jogadores no mesmo ecrã, sem passar pelo servidor ----
+const btnLocalMode = document.getElementById('btnLocalMode');
+if(btnLocalMode){
+  btnLocalMode.addEventListener('click', () => startLocalGame());
+}
+
+function startLocalGame(){
+  localMode = true;
+  localMatchOver = null;
+  currentRoom = null;
+  myTeam = null; // em modo local os dois jogadores partilham o mesmo ecrã; quem joga é definido por "turn"
+  localBestOf = Math.min(Math.max(parseInt(document.getElementById('bestOfInput')?.value) || 5, 1), 21);
+
+  document.getElementById('labelA').textContent = 'Jogador 1 (Vermelho)';
+  document.getElementById('labelB').textContent = 'Jogador 2 (Azul)';
+  scoreA = 0; scoreB = 0; turn = 'A';
+  document.getElementById('scoreA').textContent = 0;
+  document.getElementById('scoreB').textContent = 0;
+  updateTurnBadge();
+  celebrating = false;
+  resetPositions();
+  showScreen('screen-game');
+}
 
 socket.on('rooms', (list) => {
   const el = document.getElementById('roomList');
@@ -195,6 +225,7 @@ document.getElementById('chatInput').addEventListener('keydown', e => { if(e.key
 
 // ---- sala de espera (banner, não bloqueia o lobby) ----
 socket.on('room_joined', ({ room, myTeam: team }) => {
+  localMode = false;
   currentRoom = room;
   myTeam = team;
   saveSession();
@@ -211,6 +242,7 @@ document.getElementById('btnCancelWait').addEventListener('click', () => {
 
 // ---- início de partida ----
 socket.on('match_start', ({ room, players, scoreA: a, scoreB: b, turn: t }) => {
+  localMode = false;
   currentRoom = room;
   saveSession();
   document.getElementById('waitingBanner').style.display = 'none';
@@ -241,9 +273,14 @@ socket.on('opponent_disconnected', showReconnectBanner);
 socket.on('opponent_reconnected', hideReconnectBanner);
 
 document.getElementById('btnLeaveGame').addEventListener('click', () => {
-  socket.emit('leave_room');
-  clearRoomSession();
-  currentRoom = null;
+  if(localMode){
+    localMode = false;
+    localMatchOver = null;
+  } else {
+    socket.emit('leave_room');
+    clearRoomSession();
+    currentRoom = null;
+  }
   showScreen('screen-lobby');
 });
 
@@ -482,6 +519,7 @@ function findDiscAt(pos){
   return list.find(d => Math.hypot(d.x-pos.x,d.y-pos.y) < d.r+8);
 }
 function canIPlay(){
+  if(localMode) return !celebrating;
   return currentRoom && myTeam === turn && !celebrating;
 }
 
@@ -532,7 +570,13 @@ canvas.addEventListener('pointerup', (e)=>{
 
   if(vx !== 0 || vy !== 0){
     dragging.vx = vx; dragging.vy = vy;
-    socket.emit('shot', { roomId: currentRoom.id, discId: dragging.id, vx, vy });
+    if(localMode){
+      // sem servidor: o próprio cliente passa a vez ao terminar o remate
+      turn = turn === 'A' ? 'B' : 'A';
+      updateTurnBadge();
+    } else {
+      socket.emit('shot', { roomId: currentRoom.id, discId: dragging.id, vx, vy });
+    }
   }
   dragging = null; posBuffer = [];
 });
@@ -603,8 +647,9 @@ function physicsStep(){
 
   // assim que o CENTRO da bola cruza a linha de golo (já dentro da baliza),
   // o golo é reportado de imediato e a física congela nesse mesmo frame —
-  // isto impede que a bola bata na rede e volte a sair para o campo
-  if(myTeam === 'A' && currentRoom && !celebrating){
+  // isto impede que a bola bata na rede e volte a sair para o campo.
+  // Em modo local não há "equipa A autoridade": o próprio cliente decide sempre.
+  if((localMode || (myTeam === 'A' && currentRoom)) && !celebrating){
     if(ball.x < FIELD_LEFT){ reportGoal('B'); }
     else if(ball.x > FIELD_RIGHT){ reportGoal('A'); }
   }
@@ -615,7 +660,19 @@ function reportGoal(team){
   celebrationStart = performance.now();
   celebrationTeam = team;
   ball.vx = 0; ball.vy = 0;
-  socket.emit('goal', { roomId: currentRoom.id, team });
+
+  if(localMode){
+    if(team === 'A') scoreA++; else scoreB++;
+    document.getElementById('scoreA').textContent = scoreA;
+    document.getElementById('scoreB').textContent = scoreB;
+    turn = 'A';
+    updateTurnBadge();
+    if(scoreA >= localBestOf || scoreB >= localBestOf){
+      localMatchOver = { a: scoreA, b: scoreB };
+    }
+  } else {
+    socket.emit('goal', { roomId: currentRoom.id, team });
+  }
 }
 
 function resolveCollision(a,b){
@@ -672,7 +729,17 @@ function loop(){
       render(); drawGoalCelebration(elapsed);
       if(elapsed >= CELEBRATION_MS){
         celebrating = false;
-        resetPositions(); // bola e discos voltam à formação inicial no centro do campo
+        if(localMode && localMatchOver){
+          const { a, b } = localMatchOver;
+          localMatchOver = null;
+          localMode = false;
+          const title = a === b ? 'EMPATE!' : (a > b ? 'VITÓRIA VERMELHO!' : 'VITÓRIA AZUL!');
+          document.getElementById('overTitle').textContent = title;
+          document.getElementById('overScore').textContent = `Resultado final: ${a} — ${b}`;
+          showScreen('screen-over');
+        } else {
+          resetPositions(); // bola e discos voltam à formação inicial no centro do campo
+        }
       }
     } else {
       physicsStep();
@@ -684,7 +751,9 @@ function loop(){
 
 // a equipa A (vermelho) é a autoridade da física — envia o estado real várias
 // vezes por segundo; a equipa B (azul) corrige-se por esse estado, evitando
-// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo
+// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo.
+// Em modo local não há rede nenhuma envolvida, por isso isto nunca dispara
+// (myTeam fica a null durante o modo local).
 setInterval(() => {
   if(myTeam === 'A' && currentRoom && document.getElementById('screen-game').classList.contains('active') && !celebrating){
     socket.emit('state_sync', {
