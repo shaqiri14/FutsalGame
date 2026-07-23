@@ -6,6 +6,26 @@ let myPin = null;
 let myTeam = null;
 let currentRoom = null;
 
+// sempre que o socket (re)conecta — seja no arranque, seja depois de uma queda de rede,
+// separador em segundo plano, ou a página a voltar da back-forward cache do browser —
+// reenvia o nosso nome+PIN para o servidor. Sem isto, depois de uma reconexão o browser
+// continua a "achar" que está autenticado mas o servidor já não sabe quem somos, e ações
+// como criar sala ficam silenciosamente sem efeito.
+socket.on('connect', () => {
+  if(myName && myPin){
+    socket.emit('set_name', { name: myName, pin: myPin, token: myToken });
+  }
+});
+
+// se a página for restaurada a partir da back-forward cache do browser (o aviso que viste
+// na consola), o socket.io por vezes fica com uma ligação "zombie" que nunca recupera.
+// Forçar um reload garante que fica tudo limpo e a funcionar.
+window.addEventListener('pageshow', (e) => {
+  if(e.persisted){
+    window.location.reload();
+  }
+});
+
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
