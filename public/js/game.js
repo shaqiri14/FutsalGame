@@ -288,7 +288,16 @@ socket.on('turn_update', ({ turn: t }) => { turn = t; updateTurnBadge(); });
 
 socket.on('opponent_shot', ({ discId, vx, vy }) => {
   const d = findDiscById(discId);
-  if(d){ d.vx = vx; d.vy = vy; }
+  if(d){
+    d.vx = vx; d.vy = vy;
+    // a equipa A é a autoridade da física, por isso é ela que precisa de saber
+    // qual foi a equipa que rematou, mesmo quando o remate veio do adversário
+    if(myTeam === 'A'){
+      shotTeam = d.team;
+      ballTouchedThisShot = false;
+      foulHandledThisShot = false;
+    }
+  }
 });
 
 // o score_update é a fonte única de verdade para o início da celebração de golo —
@@ -354,6 +363,41 @@ let scoreA = 0, scoreB = 0, turn = 'A';
 let celebrating = false, celebrationStart = 0, celebrationTeam = null;
 const CELEBRATION_MS = 1500;
 
+// ---- controlo de faltas / pénaltis ----
+// a grande área tem as mesmas dimensões do retângulo já desenhado no campo (strokeRect 70x140)
+const BOX_W = 70, BOX_H = 140;
+function insideOwnBox(team, x, y){
+  const top = H/2 - BOX_H/2, bottom = H/2 + BOX_H/2;
+  if(y < top || y > bottom) return false;
+  if(team === 'A') return x >= FIELD_LEFT && x <= FIELD_LEFT + BOX_W;
+  return x <= FIELD_RIGHT && x >= FIELD_RIGHT - BOX_W;
+}
+function clamp(v, min, max){ return Math.min(Math.max(v, min), max); }
+
+let shotTeam = null;            // equipa que fez o remate em curso
+let ballTouchedThisShot = true; // fica false assim que um remate começa, até a bola ser tocada
+let foulHandledThisShot = true; // impede chamar 2x a mesma falta no mesmo lance
+
+// pequena mensagem central (FALTA! / PÉNALTI!), desenhada por cima do jogo sem parar a física
+let msgOverlay = null;
+const MSG_MS = 1100;
+function showMessage(text){
+  msgOverlay = { text, start: performance.now() };
+}
+function drawMessageOverlay(){
+  if(!msgOverlay) return;
+  const elapsed = performance.now() - msgOverlay.start;
+  if(elapsed > MSG_MS){ msgOverlay = null; return; }
+  const fadeOut = elapsed > MSG_MS-300 ? Math.max(0,(MSG_MS-elapsed)/300) : 1;
+  const popIn = Math.min(elapsed/180,1);
+  const scale = 0.5+Math.sin(popIn*Math.PI/2)*0.6;
+  ctx.save(); ctx.globalAlpha=fadeOut; ctx.translate(W/2,H/2); ctx.scale(scale,scale);
+  ctx.font='900 50px "Anton", sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.lineWidth=4; ctx.strokeStyle='#0d2814'; ctx.strokeText(msgOverlay.text,0,0);
+  ctx.fillStyle='#d4af37'; ctx.fillText(msgOverlay.text,0,0);
+  ctx.restore();
+}
+
 function makeDisc(x,y,team,num){
   return { x,y, vx:0, vy:0, r:15, team, num, mass:DISC_MASS, id: team+num };
 }
@@ -369,6 +413,8 @@ function resetPositions(){
     makeDisc(W-90, H/2, 'B', 1), makeDisc(W-170, H/2-90, 'B', 2), makeDisc(W-170, H/2+90, 'B', 3),
     makeDisc(W-260, H/2-40, 'B', 4), makeDisc(W-260, H/2+40, 'B', 5),
   ];
+  ballTouchedThisShot = true;
+  foulHandledThisShot = true;
 }
 function allDiscs(){ return [...discsA, ...discsB]; }
 function findDiscById(id){ return allDiscs().find(d => d.id === id); }
@@ -570,6 +616,9 @@ canvas.addEventListener('pointerup', (e)=>{
 
   if(vx !== 0 || vy !== 0){
     dragging.vx = vx; dragging.vy = vy;
+    shotTeam = dragging.team;
+    ballTouchedThisShot = false;
+    foulHandledThisShot = false;
     if(localMode){
       // sem servidor: o próprio cliente passa a vez ao terminar o remate
       turn = turn === 'A' ? 'B' : 'A';
@@ -645,13 +694,12 @@ function physicsStep(){
 
   for(let i=0;i<objs.length;i++) for(let j=i+1;j<objs.length;j++) resolveCollision(objs[i],objs[j]);
 
-  // assim que o CENTRO da bola cruza a linha de golo (já dentro da baliza),
-  // o golo é reportado de imediato e a física congela nesse mesmo frame —
-  // isto impede que a bola bata na rede e volte a sair para o campo.
+  // só conta golo quando a bola ULTRAPASSA COMPLETAMENTE a linha (a ponta de trás
+  // da bola também já passou) — se ficar apenas encostada/em cima da linha, não é golo.
   // Em modo local não há "equipa A autoridade": o próprio cliente decide sempre.
   if((localMode || (myTeam === 'A' && currentRoom)) && !celebrating){
-    if(ball.x < FIELD_LEFT){ reportGoal('B'); }
-    else if(ball.x > FIELD_RIGHT){ reportGoal('A'); }
+    if(ball.x + ball.r < FIELD_LEFT){ reportGoal('B'); }
+    else if(ball.x - ball.r > FIELD_RIGHT){ reportGoal('A'); }
   }
 }
 
@@ -665,7 +713,8 @@ function reportGoal(team){
     if(team === 'A') scoreA++; else scoreB++;
     document.getElementById('scoreA').textContent = scoreA;
     document.getElementById('scoreB').textContent = scoreB;
-    turn = 'A';
+    // quem SOFRE o golo é quem reinicia a jogada no meio-campo, não quem marcou
+    turn = team === 'A' ? 'B' : 'A';
     updateTurnBadge();
     if(scoreA >= localBestOf || scoreB >= localBestOf){
       localMatchOver = { a: scoreA, b: scoreB };
@@ -675,15 +724,68 @@ function reportGoal(team){
   }
 }
 
+// decide falta normal ou pénalti (consoante o local do choque) e repõe a bola.
+// offendingTeam = equipa que cometeu a falta (a que rematou/estava a mover a peça); a
+// equipa lesada (fouledTeam) é sempre quem fica com a bola a seguir.
+function handleFoul(x, y, offendingTeam){
+  if(foulHandledThisShot) return;
+  foulHandledThisShot = true;
+
+  const fouledTeam = offendingTeam === 'A' ? 'B' : 'A';
+  const isPenalty = insideOwnBox(offendingTeam, x, y);
+
+  let spot;
+  if(isPenalty){
+    // pénalti: a bola vai para a marca, à frente da baliza da equipa que cometeu a falta
+    spot = {
+      x: offendingTeam === 'A' ? FIELD_LEFT + BOX_W*0.65 : FIELD_RIGHT - BOX_W*0.65,
+      y: H/2
+    };
+  } else {
+    // falta normal: a bola fica exatamente no sítio onde aconteceu o choque
+    spot = { x: clamp(x, FIELD_LEFT+ball.r, FIELD_RIGHT-ball.r), y: clamp(y, FIELD_TOP+ball.r, FIELD_BOTTOM-ball.r) };
+  }
+
+  applyStoppage(fouledTeam, spot, isPenalty);
+
+  if(!localMode && currentRoom){
+    socket.emit('foul', { roomId: currentRoom.id, fouledTeam, spot, isPenalty });
+  }
+}
+
+// para quando o próprio cliente decidiu a falta (autoridade) e também quando recebe
+// a decisão do adversário (equipa A) via 'foul_called'
+function applyStoppage(fouledTeam, spot, isPenalty){
+  allDiscs().forEach(d => { d.vx = 0; d.vy = 0; });
+  ball.x = spot.x; ball.y = spot.y; ball.vx = 0; ball.vy = 0; ball.angVel = 0;
+  turn = fouledTeam;
+  updateTurnBadge();
+  showMessage(isPenalty ? 'PÉNALTI!' : 'FALTA!');
+}
+
+socket.on('foul_called', ({ fouledTeam, spot, isPenalty }) => {
+  if(myTeam === 'A') return; // a equipa A (autoridade) já aplicou isto localmente
+  applyStoppage(fouledTeam, spot, isPenalty);
+});
+
 function resolveCollision(a,b){
   const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy), minDist=a.r+b.r;
   if(dist===0 || dist>=minDist) return;
   const nx=dx/dist, ny=dy/dist, overlap=minDist-dist, totalMass=a.mass+b.mass;
   a.x -= nx*overlap*(b.mass/totalMass); a.y -= ny*overlap*(b.mass/totalMass);
   b.x += nx*overlap*(a.mass/totalMass); b.y += ny*overlap*(a.mass/totalMass);
+
+  const involvesBall = (a===ball||b===ball);
+  const isAuthority = localMode || (myTeam === 'A' && currentRoom);
+  if(involvesBall){
+    ballTouchedThisShot = true;
+  } else if(isAuthority && a.team !== b.team && !ballTouchedThisShot && !foulHandledThisShot){
+    // dois bonecos de equipas diferentes bateram um no outro antes de a bola ter sido tocada neste lance = falta
+    handleFoul((a.x+b.x)/2, (a.y+b.y)/2, shotTeam || turn);
+  }
+
   const rvx=b.vx-a.vx, rvy=b.vy-a.vy, rel=rvx*nx+rvy*ny;
   if(rel>0) return;
-  const involvesBall = (a===ball||b===ball);
   const restitution = involvesBall ? RESTITUTION_BALL : RESTITUTION_DISC;
   const impulse = -(1+restitution)*rel/(1/a.mass+1/b.mass);
   a.vx -= (impulse/a.mass)*nx; a.vy -= (impulse/a.mass)*ny;
@@ -720,6 +822,7 @@ function render(){
   drawPitch();
   discsA.forEach(drawDisc); discsB.forEach(drawDisc);
   drawBall(); drawAim();
+  drawMessageOverlay();
 }
 
 function loop(){
