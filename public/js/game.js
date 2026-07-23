@@ -2,6 +2,7 @@
 const socket = io();
 let myName = null;
 let myToken = null;
+let myPin = null;
 let myTeam = null;
 let currentRoom = null;
 
@@ -12,6 +13,7 @@ function showScreen(id){
 function saveSession(){
   sessionStorage.setItem('fg_name', myName || '');
   sessionStorage.setItem('fg_token', myToken || '');
+  sessionStorage.setItem('fg_pin', myPin || '');
   if(currentRoom){
     sessionStorage.setItem('fg_room', currentRoom.id);
     sessionStorage.setItem('fg_team', myTeam || '');
@@ -22,15 +24,40 @@ function clearRoomSession(){
   sessionStorage.removeItem('fg_team');
 }
 
-// ---- ecrã nome ----
+// ---- ecrã nome + PIN ----
+function showNameError(msg){
+  const el = document.getElementById('nameError');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideNameError(){
+  document.getElementById('nameError').style.display = 'none';
+}
+
 document.getElementById('btnSetName').addEventListener('click', () => submitName());
-document.getElementById('nameInput').addEventListener('keydown', e => { if(e.key==='Enter') submitName(); });
+document.getElementById('nameInput').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('pinInput').focus(); });
+document.getElementById('pinInput').addEventListener('keydown', e => { if(e.key==='Enter') submitName(); });
+
 function submitName(){
   const v = document.getElementById('nameInput').value.trim();
-  if(!v) return;
+  const pin = document.getElementById('pinInput').value.trim();
+  if(!v){ showNameError('Escreve um nome para continuar.'); return; }
+  if(!/^\d{4,6}$/.test(pin)){ showNameError('O PIN tem de ter entre 4 e 6 números.'); return; }
+  hideNameError();
   myToken = sessionStorage.getItem('fg_token') || null;
-  socket.emit('set_name', { name: v, token: myToken });
+  myPin = pin;
+  socket.emit('set_name', { name: v, pin, token: myToken });
 }
+
+socket.on('set_name_failed', ({ reason }) => {
+  let msg = 'Não foi possível entrar. Tenta novamente.';
+  if(reason === 'wrong_pin') msg = 'Esse nome já está registado com outro PIN. Confirma o teu PIN ou escolhe outro nome.';
+  if(reason === 'invalid_pin') msg = 'O PIN tem de ter entre 4 e 6 números.';
+  if(reason === 'no_name') msg = 'Escreve um nome para continuar.';
+  showNameError(msg);
+  // se o PIN guardado estava errado, apaga-o para não voltar a tentar sozinho no próximo refresh
+  sessionStorage.removeItem('fg_pin');
+});
 
 socket.on('name_ok', ({ name, token }) => {
   myName = name;
@@ -51,10 +78,13 @@ socket.on('name_ok', ({ name, token }) => {
 window.addEventListener('load', () => {
   const savedName = sessionStorage.getItem('fg_name');
   const savedToken = sessionStorage.getItem('fg_token');
-  if(savedName && savedToken){
+  const savedPin = sessionStorage.getItem('fg_pin');
+  if(savedName && savedToken && savedPin){
     document.getElementById('nameInput').value = savedName;
+    document.getElementById('pinInput').value = savedPin;
     myToken = savedToken;
-    socket.emit('set_name', { name: savedName, token: savedToken });
+    myPin = savedPin;
+    socket.emit('set_name', { name: savedName, pin: savedPin, token: savedToken });
   }
 });
 
