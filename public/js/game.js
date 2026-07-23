@@ -45,6 +45,14 @@ function clearRoomSession(){
 }
 function clamp(v, min, max){ return Math.min(Math.max(v, min), max); }
 
+// ---- modo local (dois jogadores no mesmo aparelho, sem sala online) ----
+let localMode = false;
+let localNameA = 'Vermelho', localNameB = 'Azul';
+let localBestOf = 5;
+let localFouls = { A: 0, B: 0 };
+let localMatchFinished = false;
+let localPendingKeeperChoice = null;
+
 // ---- ecrã nome + PIN ----
 function showNameError(msg){
   const el = document.getElementById('nameError');
