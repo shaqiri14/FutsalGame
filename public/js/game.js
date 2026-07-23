@@ -12,10 +12,39 @@ let currentRoom = null;
 // continua a "achar" que está autenticado mas o servidor já não sabe quem somos, e ações
 // como criar sala ficam silenciosamente sem efeito.
 socket.on('connect', () => {
+  hideConnectionBanner();
   if(myName && myPin){
     socket.emit('set_name', { name: myName, pin: myPin, token: myToken });
   }
 });
+
+// feedback de ligação: mostra um aviso discreto sempre que O NOSSO PRÓPRIO socket
+// cai ou está a tentar reconectar-se (diferente do 'opponent_disconnected', que é
+// sobre o adversário). Isto dá-nos logo perceção de que algo caiu, em vez de o jogo
+// parecer simplesmente "pendurado".
+socket.on('disconnect', () => {
+  showConnectionBanner('Ligação perdida — a tentar reconectar…');
+});
+socket.on('reconnect_attempt', () => {
+  showConnectionBanner('A tentar reconectar…');
+});
+socket.on('reconnect', () => {
+  showConnectionBanner('Ligado de novo!');
+  setTimeout(hideConnectionBanner, 1500);
+});
+socket.on('reconnect_failed', () => {
+  showConnectionBanner('Não foi possível reconectar. Verifica a tua ligação e recarrega a página.');
+});
+function showConnectionBanner(text){
+  const el = document.getElementById('connectionBanner');
+  if(!el) return;
+  el.textContent = text;
+  el.style.display = 'block';
+}
+function hideConnectionBanner(){
+  const el = document.getElementById('connectionBanner');
+  if(el) el.style.display = 'none';
+}
 
 // se a página for restaurada a partir da back-forward cache do browser (o aviso que viste
 // na consola), o socket.io por vezes fica com uma ligação "zombie" que nunca recupera.
@@ -25,6 +54,21 @@ window.addEventListener('pageshow', (e) => {
     window.location.reload();
   }
 });
+
+// ---- registo seguro de listeners ----
+// um único id em falta no HTML costumava rebentar TODO o script a partir desse ponto
+// (o erro "Cannot read properties of null" interrompe a execução do ficheiro), o que
+// impedia até o botão de nome/PIN de funcionar. Com este helper, um id em falta dá
+// apenas um aviso na consola e o resto do jogo continua a funcionar normalmente.
+function on(id, event, handler){
+  const el = document.getElementById(id);
+  if(!el){
+    console.warn(`[futsal] elemento #${id} não encontrado no HTML — listener de '${event}' não registado.`);
+    return;
+  }
+  el.addEventListener(event, handler);
+}
+function byId(id){ return document.getElementById(id); }
 
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -49,6 +93,11 @@ function clamp(v, min, max){ return Math.min(Math.max(v, min), max); }
 // não há socket nem "myTeam" envolvidos — o próprio cliente é sempre a autoridade
 // da física (ver isPhysicsAuthority()) e resolve faltas/golos/livres de 10 metros
 // de imediato, sem passar pelo servidor. Os dois jogadores revezam-se no mesmo ecrã.
+//
+// NOTA: o teu HTML atual ainda não tem o ecrã/botões do modo local (#btnStartLocal,
+// #localNameAInput, #localNameBInput, #localBestOfInput). O código abaixo fica
+// pronto e não rebenta nada (graças ao helper 'on'), mas só fica acessível quando
+// adicionares esse bocado de HTML. Podes ignorar esta secção por agora.
 let localMode = false;
 let localNameA = 'Vermelho', localNameB = 'Azul';
 let localBestOf = 5;
@@ -69,12 +118,12 @@ function startLocalMatch(nameA, nameB, bestOf){
   localFouls = { A: 0, B: 0 };
   localPendingKeeperChoice = null;
 
-  document.getElementById('waitingBanner').style.display = 'none';
-  document.getElementById('labelA').textContent = localNameA;
-  document.getElementById('labelB').textContent = localNameB;
+  byId('waitingBanner').style.display = 'none';
+  byId('labelA').textContent = localNameA;
+  byId('labelB').textContent = localNameB;
   scoreA = 0; scoreB = 0; turn = 'A';
-  document.getElementById('scoreA').textContent = 0;
-  document.getElementById('scoreB').textContent = 0;
+  byId('scoreA').textContent = 0;
+  byId('scoreB').textContent = 0;
   updateTurnBadge();
   updateFoulsBadge(localFouls);
   celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
@@ -84,30 +133,30 @@ function startLocalMatch(nameA, nameB, bestOf){
   showScreen('screen-game');
 }
 
-document.getElementById('btnStartLocal').addEventListener('click', () => {
-  const nameA = document.getElementById('localNameAInput').value.trim() || 'Vermelho';
-  const nameB = document.getElementById('localNameBInput').value.trim() || 'Azul';
-  const bestOf = Math.min(Math.max(parseInt(document.getElementById('localBestOfInput').value) || 5, 1), 21);
+on('btnStartLocal', 'click', () => {
+  const nameA = byId('localNameAInput').value.trim() || 'Vermelho';
+  const nameB = byId('localNameBInput').value.trim() || 'Azul';
+  const bestOf = Math.min(Math.max(parseInt(byId('localBestOfInput').value) || 5, 1), 21);
   startLocalMatch(nameA, nameB, bestOf);
 });
 
 // ---- ecrã nome + PIN ----
 function showNameError(msg){
-  const el = document.getElementById('nameError');
+  const el = byId('nameError');
   el.textContent = msg;
   el.style.display = 'block';
 }
 function hideNameError(){
-  document.getElementById('nameError').style.display = 'none';
+  byId('nameError').style.display = 'none';
 }
 
-document.getElementById('btnSetName').addEventListener('click', () => submitName());
-document.getElementById('nameInput').addEventListener('keydown', e => { if(e.key==='Enter') document.getElementById('pinInput').focus(); });
-document.getElementById('pinInput').addEventListener('keydown', e => { if(e.key==='Enter') submitName(); });
+on('btnSetName', 'click', () => submitName());
+on('nameInput', 'keydown', e => { if(e.key==='Enter') byId('pinInput').focus(); });
+on('pinInput', 'keydown', e => { if(e.key==='Enter') submitName(); });
 
 function submitName(){
-  const v = document.getElementById('nameInput').value.trim();
-  const pin = document.getElementById('pinInput').value.trim();
+  const v = byId('nameInput').value.trim();
+  const pin = byId('pinInput').value.trim();
   if(!v){ showNameError('Escreve um nome para continuar.'); return; }
   if(!/^\d{4,6}$/.test(pin)){ showNameError('O PIN tem de ter entre 4 e 6 números.'); return; }
   hideNameError();
@@ -130,7 +179,7 @@ socket.on('name_ok', ({ name, token }) => {
   myName = name;
   myToken = token;
   saveSession();
-  document.getElementById('lobbyName').textContent = name;
+  byId('lobbyName').textContent = name;
 
   // tenta reentrar automaticamente numa sala se veio de um refresh a meio de um jogo
   const savedRoom = sessionStorage.getItem('fg_room');
@@ -147,8 +196,8 @@ window.addEventListener('load', () => {
   const savedToken = sessionStorage.getItem('fg_token');
   const savedPin = sessionStorage.getItem('fg_pin');
   if(savedName && savedToken && savedPin){
-    document.getElementById('nameInput').value = savedName;
-    document.getElementById('pinInput').value = savedPin;
+    byId('nameInput').value = savedName;
+    byId('pinInput').value = savedPin;
     myToken = savedToken;
     myPin = savedPin;
     socket.emit('set_name', { name: savedName, pin: savedPin, token: savedToken });
@@ -161,11 +210,11 @@ socket.on('rejoin_ok', ({ room, myTeam: team, players, scoreA: a, scoreB: b, tur
   saveSession();
   const pa = players.find(p => p.team === 'A');
   const pb = players.find(p => p.team === 'B');
-  document.getElementById('labelA').textContent = pa.name;
-  document.getElementById('labelB').textContent = pb.name;
+  byId('labelA').textContent = pa.name;
+  byId('labelB').textContent = pb.name;
   scoreA = a; scoreB = b; turn = t;
-  document.getElementById('scoreA').textContent = a;
-  document.getElementById('scoreB').textContent = b;
+  byId('scoreA').textContent = a;
+  byId('scoreB').textContent = b;
   updateTurnBadge();
   celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
   hidePenaltyOverlay();
@@ -179,14 +228,14 @@ socket.on('rejoin_failed', () => {
 });
 
 // ---- lobby ----
-document.getElementById('btnCreateRoom').addEventListener('click', () => {
-  const roomName = document.getElementById('roomNameInput').value.trim() || (myName + ' — sala');
-  const bestOf = document.getElementById('bestOfInput').value || 5;
+on('btnCreateRoom', 'click', () => {
+  const roomName = byId('roomNameInput').value.trim() || (myName + ' — sala');
+  const bestOf = byId('bestOfInput').value || 5;
   socket.emit('create_room', { roomName, bestOf });
 });
 
 socket.on('rooms', (list) => {
-  const el = document.getElementById('roomList');
+  const el = byId('roomList');
   if(!list.length){ el.innerHTML = '<p class="hint">Nenhuma sala aberta. Cria a primeira!</p>'; return; }
   el.innerHTML = '';
   list.forEach(r => {
@@ -211,11 +260,11 @@ socket.on('rooms', (list) => {
 
 socket.on('join_failed', (msg) => alert(msg));
 
-document.getElementById('btnShowRanking').addEventListener('click', () => {
+on('btnShowRanking', 'click', () => {
   socket.emit('get_rankings');
   showScreen('screen-ranking');
 });
-document.getElementById('btnCloseRanking').addEventListener('click', () => showScreen('screen-lobby'));
+on('btnCloseRanking', 'click', () => showScreen('screen-lobby'));
 
 socket.on('rankings', (list) => {
   const tbody = document.querySelector('#rankingTable tbody');
@@ -237,14 +286,14 @@ function escapeHtml(s){
 
 // ---- chat público ----
 socket.on('chat_history', (history) => {
-  const box = document.getElementById('chatMessages');
+  const box = byId('chatMessages');
   box.innerHTML = '';
   history.forEach(addChatMessage);
 });
 socket.on('chat_message', (msg) => addChatMessage(msg));
 
 function addChatMessage(msg){
-  const box = document.getElementById('chatMessages');
+  const box = byId('chatMessages');
   const div = document.createElement('div');
   div.className = 'msg';
   div.innerHTML = `<span class="name">${escapeHtml(msg.name)}:</span> <span class="txt">${escapeHtml(msg.text)}</span>`;
@@ -252,27 +301,27 @@ function addChatMessage(msg){
   box.scrollTop = box.scrollHeight;
 }
 function sendChat(){
-  const input = document.getElementById('chatInput');
+  const input = byId('chatInput');
   const v = input.value.trim();
   if(!v || !myName) return;
   socket.emit('chat_message', v);
   input.value = '';
 }
-document.getElementById('btnChatSend').addEventListener('click', sendChat);
-document.getElementById('chatInput').addEventListener('keydown', e => { if(e.key==='Enter') sendChat(); });
+on('btnChatSend', 'click', sendChat);
+on('chatInput', 'keydown', e => { if(e.key==='Enter') sendChat(); });
 
 // ---- sala de espera (banner, não bloqueia o lobby) ----
 socket.on('room_joined', ({ room, myTeam: team }) => {
   currentRoom = room;
   myTeam = team;
   saveSession();
-  document.getElementById('waitRoomInfo').textContent = `À espera de adversário em "${room.name}" — até ${room.bestOf} golos`;
-  document.getElementById('waitingBanner').style.display = 'flex';
+  byId('waitRoomInfo').textContent = `À espera de adversário em "${room.name}" — até ${room.bestOf} golos`;
+  byId('waitingBanner').style.display = 'flex';
   showScreen('screen-lobby');
 });
-document.getElementById('btnCancelWait').addEventListener('click', () => {
+on('btnCancelWait', 'click', () => {
   socket.emit('leave_room');
-  document.getElementById('waitingBanner').style.display = 'none';
+  byId('waitingBanner').style.display = 'none';
   clearRoomSession();
   currentRoom = null;
 });
@@ -281,14 +330,14 @@ document.getElementById('btnCancelWait').addEventListener('click', () => {
 socket.on('match_start', ({ room, players, scoreA: a, scoreB: b, turn: t }) => {
   currentRoom = room;
   saveSession();
-  document.getElementById('waitingBanner').style.display = 'none';
+  byId('waitingBanner').style.display = 'none';
   const pa = players.find(p => p.team === 'A');
   const pb = players.find(p => p.team === 'B');
-  document.getElementById('labelA').textContent = pa.name;
-  document.getElementById('labelB').textContent = pb.name;
+  byId('labelA').textContent = pa.name;
+  byId('labelB').textContent = pb.name;
   scoreA = a; scoreB = b; turn = t;
-  document.getElementById('scoreA').textContent = a;
-  document.getElementById('scoreB').textContent = b;
+  byId('scoreA').textContent = a;
+  byId('scoreB').textContent = b;
   updateTurnBadge();
   updateFoulsBadge({ A: 0, B: 0 });
   celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
@@ -305,12 +354,12 @@ socket.on('opponent_left', () => {
   showScreen('screen-lobby');
 });
 
-function showReconnectBanner(){ document.getElementById('reconnectBanner').style.display = 'block'; }
-function hideReconnectBanner(){ document.getElementById('reconnectBanner').style.display = 'none'; }
+function showReconnectBanner(){ byId('reconnectBanner').style.display = 'block'; }
+function hideReconnectBanner(){ byId('reconnectBanner').style.display = 'none'; }
 socket.on('opponent_disconnected', showReconnectBanner);
 socket.on('opponent_reconnected', hideReconnectBanner);
 
-document.getElementById('btnLeaveGame').addEventListener('click', () => {
+on('btnLeaveGame', 'click', () => {
   if(localMode){
     localMode = false;
     celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
@@ -336,7 +385,7 @@ socket.on('opponent_shot', ({ discId, vx, vy }) => {
 
 // --- faltas ---
 function updateFoulsBadge(fouls){
-  const el = document.getElementById('foulsBadge');
+  const el = byId('foulsBadge');
   if(el) el.textContent = `Faltas: Vermelho ${fouls.A||0} — Azul ${fouls.B||0}`;
 }
 socket.on('fouls_update', ({ fouls }) => updateFoulsBadge(fouls));
@@ -385,8 +434,8 @@ socket.on('foul_called', (data) => {
 // mesmo que o cliente que marcou já tenha "congelado" localmente um pouco antes
 socket.on('score_update', ({ scoreA: a, scoreB: b, turn: t, scoringTeam }) => {
   scoreA = a; scoreB = b; turn = t;
-  document.getElementById('scoreA').textContent = scoreA;
-  document.getElementById('scoreB').textContent = scoreB;
+  byId('scoreA').textContent = scoreA;
+  byId('scoreB').textContent = scoreB;
   updateTurnBadge();
   if(!celebrating){
     celebrating = true;
@@ -399,17 +448,17 @@ socket.on('match_over', ({ winner, scoreA: a, scoreB: b }) => {
   clearRoomSession();
   currentRoom = null;
   const title = winner === 'draw' ? 'EMPATE!' : (winner === myTeam ? 'VITÓRIA!' : 'DERROTA');
-  document.getElementById('overTitle').textContent = title;
-  document.getElementById('overScore').textContent = `Resultado final: ${a} — ${b}`;
+  byId('overTitle').textContent = title;
+  byId('overScore').textContent = `Resultado final: ${a} — ${b}`;
   showScreen('screen-over');
 });
-document.getElementById('btnBackToLobby').addEventListener('click', () => {
+on('btnBackToLobby', 'click', () => {
   socket.emit('get_rankings');
   showScreen('screen-lobby');
 });
 
 // ============ MOTOR DE JOGO ============
-const canvas = document.getElementById('pitch');
+const canvas = byId('pitch');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
 const GOAL_W = 120;
@@ -499,7 +548,7 @@ function findDiscById(id){ return allDiscs().find(d => d.id === id); }
 function everythingStopped(){ return [...allDiscs(), ball].every(o => Math.hypot(o.vx,o.vy) < MIN_SPEED); }
 
 function updateTurnBadge(){
-  const badge = document.getElementById('turnBadge');
+  const badge = byId('turnBadge');
   badge.textContent = 'VEZ: ' + (turn === 'A' ? 'VERMELHO' : 'AZUL');
   badge.className = 'turn ' + turn.toLowerCase();
 }
@@ -746,7 +795,7 @@ canvas.addEventListener('pointerup', (e)=>{
     let aimX = mouse.x-dragStart.x, aimY = mouse.y-dragStart.y;
     const aimDist = Math.hypot(aimX,aimY);
     if(aimDist >= MIN_PULL_TO_AIM){
-      const powerPct = parseInt(document.getElementById('powerSlider').value)/100;
+      const powerPct = parseInt(byId('powerSlider').value)/100;
       const speed = powerPct * MAX_PULL_SPEED;
       vx = (aimX/aimDist)*speed;
       vy = (aimY/aimDist)*speed;
@@ -756,8 +805,8 @@ canvas.addEventListener('pointerup', (e)=>{
   if(inPenalty && dragging === penaltyShooterDisc){
     if(vx !== 0 || vy !== 0){
       penaltyCommitted = true;
-      document.getElementById('penaltyShooterHint').style.display = 'none';
-      document.getElementById('penaltyWaiting').style.display = 'block';
+      byId('penaltyShooterHint').style.display = 'none';
+      byId('penaltyWaiting').style.display = 'block';
       socket.emit('penalty_shot', { roomId: currentRoom.id, vx, vy });
     }
     dragging = null; posBuffer = []; selectedDisc = null;
@@ -772,8 +821,8 @@ canvas.addEventListener('pointerup', (e)=>{
   dragging = null; posBuffer = []; selectedDisc = null;
 });
 
-document.getElementById('powerSlider').addEventListener('input', (e)=>{
-  document.getElementById('powerVal').textContent = e.target.value + '%';
+on('powerSlider', 'input', (e)=>{
+  byId('powerVal').textContent = e.target.value + '%';
 });
 
 function drawAim(){
@@ -952,7 +1001,7 @@ function render(){
 }
 
 function loop(){
-  if(document.getElementById('screen-game').classList.contains('active')){
+  if(byId('screen-game').classList.contains('active')){
     if(celebrating){
       const elapsed = performance.now()-celebrationStart;
       render(); drawGoalCelebration(elapsed);
@@ -971,6 +1020,7 @@ function loop(){
       render();
     } else {
       physicsStep();
+      applyStateSyncSmoothing(); // lado B: aproxima-se suavemente do último estado recebido do servidor
       render();
       if(myTeam === 'A' && activeShotDiscId && everythingStopped()){
         activeShotDiscId = null;
@@ -986,9 +1036,12 @@ function loop(){
 
 // a equipa A (vermelho) é a autoridade da física — envia o estado real várias
 // vezes por segundo; a equipa B (azul) corrige-se por esse estado, evitando
-// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo
+// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo.
+// Em vez de "saltar" instantaneamente para a posição recebida, o lado B interpola
+// suavemente até lá (ver applyStateSync / smoothing no loop de física), o que
+// disfarça bem os atrasos de rede e evita que o jogo pareça aos solavancos.
 setInterval(() => {
-  if(myTeam === 'A' && currentRoom && document.getElementById('screen-game').classList.contains('active') && !celebrating && !foulFlash && !awaitingFoulResult){
+  if(myTeam === 'A' && currentRoom && byId('screen-game').classList.contains('active') && !celebrating && !foulFlash && !awaitingFoulResult){
     socket.emit('state_sync', {
       roomId: currentRoom.id,
       ball: { x:ball.x, y:ball.y, vx:ball.vx, vy:ball.vy, spin:ball.spin, angVel:ball.angVel },
@@ -997,17 +1050,39 @@ setInterval(() => {
   }
 }, 90);
 
+// alvo de interpolação para o lado B: guardamos a última posição recebida do
+// servidor e vamos "perseguindo-a" a cada frame em vez de saltar para ela de
+// imediato — isto disfarça o jitter da rede sem inventar física nova
+let syncTargetBall = null;
+let syncTargetDiscs = null;
+const SYNC_LERP = 0.35;
+
 socket.on('state_sync', (state) => {
   if(myTeam === 'A') return;
   if(celebrating || foulFlash) return; // cada lado usa a formação local determinística nestas fases
-  if(state.ball) Object.assign(ball, state.ball);
-  if(state.discs){
-    state.discs.forEach(sd => {
+  if(state.ball) syncTargetBall = state.ball;
+  if(state.discs) syncTargetDiscs = state.discs;
+});
+
+function applyStateSyncSmoothing(){
+  if(myTeam === 'A') return;
+  if(syncTargetBall){
+    ball.x += (syncTargetBall.x - ball.x) * SYNC_LERP;
+    ball.y += (syncTargetBall.y - ball.y) * SYNC_LERP;
+    ball.vx = syncTargetBall.vx; ball.vy = syncTargetBall.vy;
+    ball.spin = syncTargetBall.spin; ball.angVel = syncTargetBall.angVel;
+  }
+  if(syncTargetDiscs){
+    syncTargetDiscs.forEach(sd => {
       const d = findDiscById(sd.id);
-      if(d){ d.x=sd.x; d.y=sd.y; d.vx=sd.vx; d.vy=sd.vy; }
+      if(d){
+        d.x += (sd.x - d.x) * SYNC_LERP;
+        d.y += (sd.y - d.y) * SYNC_LERP;
+        d.vx = sd.vx; d.vy = sd.vy;
+      }
     });
   }
-});
+}
 
 // a equipa A é a autoridade da física (deteta golos, faltas e fim do livre de 10 metros),
 // mas isso corre dentro do loop() que depende de requestAnimationFrame — e os browsers
@@ -1020,7 +1095,7 @@ socket.on('state_sync', (state) => {
 setInterval(() => {
   if(!document.hidden) return;
   if(myTeam !== 'A' || !currentRoom) return;
-  if(!document.getElementById('screen-game').classList.contains('active')) return;
+  if(!byId('screen-game').classList.contains('active')) return;
 
   if(celebrating){
     if(performance.now() - celebrationStart >= CELEBRATION_MS){
@@ -1042,6 +1117,14 @@ setInterval(() => {
     penaltyKickActive = false;
     socket.emit('penalty_missed', { roomId: currentRoom.id });
   }
+}, 120);
+
+// para o lado B (não-autoridade), também vale a pena continuar a interpolar mesmo
+// em segundo plano, senão a bola "salta" de repente quando a aba volta ao ecrã
+setInterval(() => {
+  if(!document.hidden) return;
+  if(myTeam === 'A') return;
+  applyStateSyncSmoothing();
 }, 120);
 
 // ============ LIVRE DE 10 METROS ============
@@ -1082,24 +1165,41 @@ function startTenMeterKick(offendingTeam, fouledTeam){
   showPenaltyOverlay();
 }
 
+// CORREÇÃO PRINCIPAL DO BUG DO LIVRE DE 10 METROS:
+// o #penaltyOverlay é "position:absolute; inset:0" e cobre o campo inteiro. Enquanto
+// só está a mostrar texto (ex: "Já podes rematar!") continuava, mesmo assim, a
+// intercetar todos os toques/cliques — por isso o jogador nunca conseguia arrastar
+// o disco no canvas por baixo, e ficava "preso" na mensagem. A correção é simples:
+// só deixamos o overlay bloquear toques quando ele TEM de facto algo clicável
+// (os botões do guarda-redes). Nos restantes estados (à espera, ou "podes rematar"),
+// o overlay passa a "pointer-events:none" e os toques atravessam-no até ao canvas.
 function showPenaltyOverlay(){
-  const overlay = document.getElementById('penaltyOverlay');
+  const overlay = byId('penaltyOverlay');
   overlay.style.display = 'flex';
-  document.getElementById('penaltyKeeperControls').style.display = penaltyRole === 'keeper' ? 'block' : 'none';
-  document.getElementById('penaltyShooterWait').style.display = (penaltyRole === 'shooter' && !penaltyKeeperReady) ? 'block' : 'none';
-  document.getElementById('penaltyShooterHint').style.display = (penaltyRole === 'shooter' && penaltyKeeperReady) ? 'block' : 'none';
-  document.getElementById('penaltyWaiting').style.display = 'none';
+
+  const isKeeperChoosing = penaltyRole === 'keeper' && !penaltyCommitted;
+  byId('penaltyKeeperControls').style.display = isKeeperChoosing ? 'block' : 'none';
+  byId('penaltyShooterWait').style.display = (penaltyRole === 'shooter' && !penaltyKeeperReady) ? 'block' : 'none';
+  byId('penaltyShooterHint').style.display = (penaltyRole === 'shooter' && penaltyKeeperReady && !penaltyCommitted) ? 'block' : 'none';
+  byId('penaltyWaiting').style.display = 'none';
+
+  // só bloqueia cliques quando há botões para carregar (guarda-redes a escolher);
+  // em todos os outros casos deixa passar para o canvas por baixo
+  overlay.style.pointerEvents = isKeeperChoosing ? 'auto' : 'none';
 }
 function hidePenaltyOverlay(){
-  document.getElementById('penaltyOverlay').style.display = 'none';
+  const overlay = byId('penaltyOverlay');
+  overlay.style.display = 'none';
+  overlay.style.pointerEvents = 'auto';
 }
 
 document.querySelectorAll('#penaltyKeeperControls button').forEach(btn => {
   btn.addEventListener('click', () => {
     if(!inPenalty || penaltyRole !== 'keeper' || penaltyCommitted) return;
     penaltyCommitted = true;
-    document.getElementById('penaltyKeeperControls').style.display = 'none';
-    document.getElementById('penaltyWaiting').style.display = 'block';
+    byId('penaltyKeeperControls').style.display = 'none';
+    byId('penaltyWaiting').style.display = 'block';
+    byId('penaltyOverlay').style.pointerEvents = 'none';
     socket.emit('penalty_keeper_choice', { roomId: currentRoom.id, side: btn.dataset.side });
   });
 });
@@ -1107,8 +1207,10 @@ document.querySelectorAll('#penaltyKeeperControls button').forEach(btn => {
 socket.on('penalty_keeper_ready', () => {
   penaltyKeeperReady = true;
   if(penaltyRole === 'shooter'){
-    document.getElementById('penaltyShooterWait').style.display = 'none';
-    document.getElementById('penaltyShooterHint').style.display = 'block';
+    byId('penaltyShooterWait').style.display = 'none';
+    byId('penaltyShooterHint').style.display = 'block';
+    // agora é a vez do remate — o overlay deixa de bloquear o canvas
+    byId('penaltyOverlay').style.pointerEvents = 'none';
   }
 });
 
