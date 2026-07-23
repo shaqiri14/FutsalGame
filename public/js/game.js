@@ -46,12 +46,50 @@ function clearRoomSession(){
 function clamp(v, min, max){ return Math.min(Math.max(v, min), max); }
 
 // ---- modo local (dois jogadores no mesmo aparelho, sem sala online) ----
+// não há socket nem "myTeam" envolvidos — o próprio cliente é sempre a autoridade
+// da física (ver isPhysicsAuthority()) e resolve faltas/golos/livres de 10 metros
+// de imediato, sem passar pelo servidor. Os dois jogadores revezam-se no mesmo ecrã.
 let localMode = false;
 let localNameA = 'Vermelho', localNameB = 'Azul';
 let localBestOf = 5;
 let localFouls = { A: 0, B: 0 };
 let localMatchFinished = false;
 let localPendingKeeperChoice = null;
+
+function startLocalMatch(nameA, nameB, bestOf){
+  localMode = true;
+  localMatchFinished = false;
+  currentRoom = null;
+  myTeam = null;
+  clearRoomSession();
+
+  localNameA = nameA || 'Vermelho';
+  localNameB = nameB || 'Azul';
+  localBestOf = bestOf;
+  localFouls = { A: 0, B: 0 };
+  localPendingKeeperChoice = null;
+
+  document.getElementById('waitingBanner').style.display = 'none';
+  document.getElementById('labelA').textContent = localNameA;
+  document.getElementById('labelB').textContent = localNameB;
+  scoreA = 0; scoreB = 0; turn = 'A';
+  document.getElementById('scoreA').textContent = 0;
+  document.getElementById('scoreB').textContent = 0;
+  updateTurnBadge();
+  updateFoulsBadge(localFouls);
+  celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
+  penaltyKickActive = false;
+  hidePenaltyOverlay();
+  resetPositions();
+  showScreen('screen-game');
+}
+
+document.getElementById('btnStartLocal').addEventListener('click', () => {
+  const nameA = document.getElementById('localNameAInput').value.trim() || 'Vermelho';
+  const nameB = document.getElementById('localNameBInput').value.trim() || 'Azul';
+  const bestOf = Math.min(Math.max(parseInt(document.getElementById('localBestOfInput').value) || 5, 1), 21);
+  startLocalMatch(nameA, nameB, bestOf);
+});
 
 // ---- ecrã nome + PIN ----
 function showNameError(msg){
@@ -273,6 +311,13 @@ socket.on('opponent_disconnected', showReconnectBanner);
 socket.on('opponent_reconnected', hideReconnectBanner);
 
 document.getElementById('btnLeaveGame').addEventListener('click', () => {
+  if(localMode){
+    localMode = false;
+    celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
+    hidePenaltyOverlay();
+    showScreen('screen-lobby');
+    return;
+  }
   socket.emit('leave_room');
   clearRoomSession();
   currentRoom = null;
@@ -408,6 +453,9 @@ const TEN_METER_GAP = 20;
 const TEN_METER_SHOOTER_OFFSET = 45;
 const TEN_METER_KEEPER_LINE = 12;
 const KEEPER_DASH_SPEED = 9;
+// nº de faltas acumuladas da mesma equipa a partir do qual passa a ser livre de 10 metros
+// (só usado em modo local; em modo online quem decide isto é o server.js)
+const LOCAL_FOULS_FOR_TEN_METER = 6;
 
 let scoreA = 0, scoreB = 0, turn = 'A';
 let celebrating = false, celebrationStart = 0, celebrationTeam = null;
@@ -960,6 +1008,41 @@ socket.on('state_sync', (state) => {
     });
   }
 });
+
+// a equipa A é a autoridade da física (deteta golos, faltas e fim do livre de 10 metros),
+// mas isso corre dentro do loop() que depende de requestAnimationFrame — e os browsers
+// travam quase por completo o requestAnimationFrame de janelas/separadores que não estão
+// em primeiro plano (ex: a testar os dois jogadores no mesmo PC em duas janelas, e uma
+// delas fica em segundo plano). Sem isto, o jogo "encravava" à espera de um evento que
+// o cliente da equipa A deixava de conseguir reportar. Este tique de reserva usa
+// setInterval (muito menos travado do que o requestAnimationFrame em segundo plano) e só
+// atua quando a janela está mesmo escondida, para não fazer duplo trabalho com o loop normal.
+setInterval(() => {
+  if(!document.hidden) return;
+  if(myTeam !== 'A' || !currentRoom) return;
+  if(!document.getElementById('screen-game').classList.contains('active')) return;
+
+  if(celebrating){
+    if(performance.now() - celebrationStart >= CELEBRATION_MS){
+      celebrating = false;
+      penaltyKickActive = false;
+      resetPositions();
+    }
+    return;
+  }
+  if(foulFlash){
+    if(performance.now() - foulFlashStart >= FOUL_FLASH_MS) foulFlash = false;
+    return;
+  }
+  if(awaitingFoulResult || inPenalty) return;
+
+  physicsStep();
+  if(activeShotDiscId && everythingStopped()) activeShotDiscId = null;
+  if(penaltyKickActive && everythingStopped()){
+    penaltyKickActive = false;
+    socket.emit('penalty_missed', { roomId: currentRoom.id });
+  }
+}, 120);
 
 // ============ LIVRE DE 10 METROS ============
 function startTenMeterKick(offendingTeam, fouledTeam){
