@@ -6,11 +6,6 @@ let myPin = null;
 let myTeam = null;
 let currentRoom = null;
 
-// ---- modo local (2 jogadores no mesmo ecrã, sem servidor) ----
-let localMode = false;
-let localBestOf = 5;
-let localMatchOver = null; // { a, b } quando o jogo local terminou, à espera da celebração acabar
-
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -28,6 +23,7 @@ function clearRoomSession(){
   sessionStorage.removeItem('fg_room');
   sessionStorage.removeItem('fg_team');
 }
+function clamp(v, min, max){ return Math.min(Math.max(v, min), max); }
 
 // ---- ecrã nome + PIN ----
 function showNameError(msg){
@@ -94,7 +90,6 @@ window.addEventListener('load', () => {
 });
 
 socket.on('rejoin_ok', ({ room, myTeam: team, players, scoreA: a, scoreB: b, turn: t }) => {
-  localMode = false;
   currentRoom = room;
   myTeam = team;
   saveSession();
@@ -106,7 +101,8 @@ socket.on('rejoin_ok', ({ room, myTeam: team, players, scoreA: a, scoreB: b, tur
   document.getElementById('scoreA').textContent = a;
   document.getElementById('scoreB').textContent = b;
   updateTurnBadge();
-  celebrating = false;
+  celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
+  hidePenaltyOverlay();
   resetPositions(); // recomeça este ponto a meio-campo (o placar mantém-se)
   hideReconnectBanner();
   showScreen('screen-game');
@@ -122,30 +118,6 @@ document.getElementById('btnCreateRoom').addEventListener('click', () => {
   const bestOf = document.getElementById('bestOfInput').value || 5;
   socket.emit('create_room', { roomName, bestOf });
 });
-
-// ---- modo local: 2 jogadores no mesmo ecrã, sem passar pelo servidor ----
-const btnLocalMode = document.getElementById('btnLocalMode');
-if(btnLocalMode){
-  btnLocalMode.addEventListener('click', () => startLocalGame());
-}
-
-function startLocalGame(){
-  localMode = true;
-  localMatchOver = null;
-  currentRoom = null;
-  myTeam = null; // em modo local os dois jogadores partilham o mesmo ecrã; quem joga é definido por "turn"
-  localBestOf = Math.min(Math.max(parseInt(document.getElementById('bestOfInput')?.value) || 5, 1), 21);
-
-  document.getElementById('labelA').textContent = 'Jogador 1 (Vermelho)';
-  document.getElementById('labelB').textContent = 'Jogador 2 (Azul)';
-  scoreA = 0; scoreB = 0; turn = 'A';
-  document.getElementById('scoreA').textContent = 0;
-  document.getElementById('scoreB').textContent = 0;
-  updateTurnBadge();
-  celebrating = false;
-  resetPositions();
-  showScreen('screen-game');
-}
 
 socket.on('rooms', (list) => {
   const el = document.getElementById('roomList');
@@ -225,7 +197,6 @@ document.getElementById('chatInput').addEventListener('keydown', e => { if(e.key
 
 // ---- sala de espera (banner, não bloqueia o lobby) ----
 socket.on('room_joined', ({ room, myTeam: team }) => {
-  localMode = false;
   currentRoom = room;
   myTeam = team;
   saveSession();
@@ -242,7 +213,6 @@ document.getElementById('btnCancelWait').addEventListener('click', () => {
 
 // ---- início de partida ----
 socket.on('match_start', ({ room, players, scoreA: a, scoreB: b, turn: t }) => {
-  localMode = false;
   currentRoom = room;
   saveSession();
   document.getElementById('waitingBanner').style.display = 'none';
@@ -254,7 +224,9 @@ socket.on('match_start', ({ room, players, scoreA: a, scoreB: b, turn: t }) => {
   document.getElementById('scoreA').textContent = a;
   document.getElementById('scoreB').textContent = b;
   updateTurnBadge();
-  celebrating = false;
+  updateFoulsBadge({ A: 0, B: 0 });
+  celebrating = false; foulFlash = false; awaitingFoulResult = false; inPenalty = false;
+  hidePenaltyOverlay();
   resetPositions();
   showScreen('screen-game');
 });
@@ -273,14 +245,9 @@ socket.on('opponent_disconnected', showReconnectBanner);
 socket.on('opponent_reconnected', hideReconnectBanner);
 
 document.getElementById('btnLeaveGame').addEventListener('click', () => {
-  if(localMode){
-    localMode = false;
-    localMatchOver = null;
-  } else {
-    socket.emit('leave_room');
-    clearRoomSession();
-    currentRoom = null;
-  }
+  socket.emit('leave_room');
+  clearRoomSession();
+  currentRoom = null;
   showScreen('screen-lobby');
 });
 
@@ -290,14 +257,54 @@ socket.on('opponent_shot', ({ discId, vx, vy }) => {
   const d = findDiscById(discId);
   if(d){
     d.vx = vx; d.vy = vy;
-    // a equipa A é a autoridade da física, por isso é ela que precisa de saber
-    // qual foi a equipa que rematou, mesmo quando o remate veio do adversário
-    if(myTeam === 'A'){
-      shotTeam = d.team;
-      ballTouchedThisShot = false;
-      foulHandledThisShot = false;
+    activeShotDiscId = discId; activeShotTeam = d.team; activeShotTouchedBall = false;
+  }
+});
+
+// --- faltas ---
+function updateFoulsBadge(fouls){
+  const el = document.getElementById('foulsBadge');
+  if(el) el.textContent = `Faltas: Vermelho ${fouls.A||0} — Azul ${fouls.B||0}`;
+}
+socket.on('fouls_update', ({ fouls }) => updateFoulsBadge(fouls));
+
+socket.on('foul_called', (data) => {
+  awaitingFoulResult = false;
+  activeShotDiscId = null;
+
+  if(data.isTenMeter){
+    startTenMeterKick(data.offendingTeam, data.fouledTeam);
+    return;
+  }
+
+  // livre normal: a bola fica onde ocorreu a falta; quem sofreu a falta fica com a posse,
+  // um pouco afastado da bola para poder correr e rematar; quem cometeu a falta é empurrado
+  // para uma distância mínima da bola, como a barreira de um livre
+  ball.x = data.x; ball.y = data.y; ball.vx = 0; ball.vy = 0; ball.spin = 0; ball.angVel = 0;
+  turn = data.fouledTeam;
+  updateTurnBadge();
+
+  const victim = findDiscById(data.victimDiscId);
+  if(victim){
+    const backOff = victim.team === 'A' ? -1 : 1; // A ataca a baliza direita, por isso recua para a esquerda
+    victim.x = clamp(ball.x + backOff*FREE_KICK_RUNUP, FIELD_LEFT+victim.r, FIELD_RIGHT-victim.r);
+    victim.y = clamp(ball.y, FIELD_TOP+victim.r, FIELD_BOTTOM-victim.r);
+    victim.vx = 0; victim.vy = 0;
+  }
+  const offender = findDiscById(data.offenderDiscId);
+  if(offender){
+    const dx = offender.x - ball.x, dy = offender.y - ball.y;
+    const dist = Math.hypot(dx,dy) || 1;
+    if(dist < FREE_KICK_WALL_DIST){
+      offender.x = clamp(ball.x + (dx/dist)*FREE_KICK_WALL_DIST, FIELD_LEFT+offender.r, FIELD_RIGHT-offender.r);
+      offender.y = clamp(ball.y + (dy/dist)*FREE_KICK_WALL_DIST, FIELD_TOP+offender.r, FIELD_BOTTOM-offender.r);
+      offender.vx = 0; offender.vy = 0;
     }
   }
+
+  foulFlashText = 'FALTA!';
+  foulFlash = true;
+  foulFlashStart = performance.now();
 });
 
 // o score_update é a fonte única de verdade para o início da celebração de golo —
@@ -333,6 +340,7 @@ const canvas = document.getElementById('pitch');
 const ctx = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
 const GOAL_W = 120;
+const isMobile = window.matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
 
 const DISC_FRICTION = 0.983;
 const BALL_FRICTION = 0.986;
@@ -343,6 +351,7 @@ const MAX_SPEED_BALL = 13;
 const FIELD_TOP = 6, FIELD_BOTTOM = H - 6;
 const FIELD_LEFT = 34, FIELD_RIGHT = W - 34;
 const GOAL_TOP_Y = H/2 - GOAL_W/2, GOAL_BOTTOM_Y = H/2 + GOAL_W/2;
+const BOX_W = 70, BOX_H = 140;
 
 const DISC_MASS = 3;
 const BALL_MASS = 1;
@@ -355,48 +364,40 @@ const MAX_SPIN_VEL = 0.75;
 
 const MAX_PULL_SPEED = 7;
 const MIN_PULL_TO_AIM = 6;
-const AIM_LENGTH = 42;
+const AIM_LENGTH = isMobile ? 70 : 42;
+const AIM_LINE_WIDTH = isMobile ? 5 : 2.5;
+const AIM_HEAD_SIZE = isMobile ? 15 : 7;
 const SWIPE_POWER = 0.9;
 const MAX_SWIPE_SPEED = 9;
+
+// livre normal: distância a que fica quem sofreu a falta (para correr) e a "barreira" mínima do faltoso
+const FREE_KICK_RUNUP = 45;
+const FREE_KICK_WALL_DIST = 70;
+
+// livre de 10 metros: posição da bola em frente à baliza, fora da grande área
+const TEN_METER_GAP = 20;
+const TEN_METER_SHOOTER_OFFSET = 45;
+const TEN_METER_KEEPER_LINE = 12;
+const KEEPER_DASH_SPEED = 9;
 
 let scoreA = 0, scoreB = 0, turn = 'A';
 let celebrating = false, celebrationStart = 0, celebrationTeam = null;
 const CELEBRATION_MS = 1500;
 
-// ---- controlo de faltas / pénaltis ----
-// a grande área tem as mesmas dimensões do retângulo já desenhado no campo (strokeRect 70x140)
-const BOX_W = 70, BOX_H = 140;
-function insideOwnBox(team, x, y){
-  const top = H/2 - BOX_H/2, bottom = H/2 + BOX_H/2;
-  if(y < top || y > bottom) return false;
-  if(team === 'A') return x >= FIELD_LEFT && x <= FIELD_LEFT + BOX_W;
-  return x <= FIELD_RIGHT && x >= FIELD_RIGHT - BOX_W;
-}
-function clamp(v, min, max){ return Math.min(Math.max(v, min), max); }
+// --- deteção de faltas em jogo aberto ---
+let activeShotDiscId = null, activeShotTeam = null, activeShotTouchedBall = false;
+let awaitingFoulResult = false;
+let foulFlash = false, foulFlashStart = 0, foulFlashText = '';
+const FOUL_FLASH_MS = 1200;
 
-let shotTeam = null;            // equipa que fez o remate em curso
-let ballTouchedThisShot = true; // fica false assim que um remate começa, até a bola ser tocada
-let foulHandledThisShot = true; // impede chamar 2x a mesma falta no mesmo lance
-
-// pequena mensagem central (FALTA! / PÉNALTI!), desenhada por cima do jogo sem parar a física
-let msgOverlay = null;
-const MSG_MS = 1100;
-function showMessage(text){
-  msgOverlay = { text, start: performance.now() };
-}
-function drawMessageOverlay(){
-  if(!msgOverlay) return;
-  const elapsed = performance.now() - msgOverlay.start;
-  if(elapsed > MSG_MS){ msgOverlay = null; return; }
-  const fadeOut = elapsed > MSG_MS-300 ? Math.max(0,(MSG_MS-elapsed)/300) : 1;
-  const popIn = Math.min(elapsed/180,1);
-  const scale = 0.5+Math.sin(popIn*Math.PI/2)*0.6;
-  ctx.save(); ctx.globalAlpha=fadeOut; ctx.translate(W/2,H/2); ctx.scale(scale,scale);
-  ctx.font='900 50px "Anton", sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-  ctx.lineWidth=4; ctx.strokeStyle='#0d2814'; ctx.strokeText(msgOverlay.text,0,0);
-  ctx.fillStyle='#d4af37'; ctx.fillText(msgOverlay.text,0,0);
-  ctx.restore();
-}
+// --- livre de 10 metros (guarda-redes escolhe primeiro, remate decide) ---
+let inPenalty = false;
+let penaltyRole = null; // 'shooter' | 'keeper' | null
+let penaltyCommitted = false;
+let penaltyKeeperReady = false;
+let penaltyOffendingTeam = null, penaltyFouledTeam = null;
+let penaltyShooterDisc = null, penaltyKeeperDisc = null;
+let penaltyKickActive = false;
 
 function makeDisc(x,y,team,num){
   return { x,y, vx:0, vy:0, r:15, team, num, mass:DISC_MASS, id: team+num };
@@ -413,8 +414,8 @@ function resetPositions(){
     makeDisc(W-90, H/2, 'B', 1), makeDisc(W-170, H/2-90, 'B', 2), makeDisc(W-170, H/2+90, 'B', 3),
     makeDisc(W-260, H/2-40, 'B', 4), makeDisc(W-260, H/2+40, 'B', 5),
   ];
-  ballTouchedThisShot = true;
-  foulHandledThisShot = true;
+  activeShotDiscId = null; activeShotTouchedBall = false;
+  selectedDisc = null;
 }
 function allDiscs(){ return [...discsA, ...discsB]; }
 function findDiscById(id){ return allDiscs().find(d => d.id === id); }
@@ -478,8 +479,8 @@ function drawPitch(){
   ctx.beginPath(); ctx.moveTo(W/2,FIELD_TOP); ctx.lineTo(W/2,FIELD_BOTTOM); ctx.stroke();
   ctx.beginPath(); ctx.arc(W/2,H/2,50,0,Math.PI*2); ctx.stroke();
   ctx.beginPath(); ctx.arc(W/2,H/2,3,0,Math.PI*2); ctx.fillStyle='#eef0e6'; ctx.fill();
-  ctx.strokeRect(FIELD_LEFT,H/2-70,70,140);
-  ctx.strokeRect(FIELD_RIGHT-70,H/2-70,70,140);
+  ctx.strokeRect(FIELD_LEFT,H/2-BOX_H/2,BOX_W,BOX_H);
+  ctx.strokeRect(FIELD_RIGHT-BOX_W,H/2-BOX_H/2,BOX_W,BOX_H);
 }
 
 // boneco: fica sempre virado para a bola (ombros, cabeça e pés vistos de cima)
@@ -517,6 +518,14 @@ function drawDisc(d){
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(d.num, 0, 1);
   ctx.restore();
+
+  if(selectedDisc === d){
+    ctx.save();
+    ctx.strokeStyle = 'rgba(212,175,55,0.95)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(d.x, d.y, r+7, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function drawPentagon(cx,cy,size,rot){
@@ -553,25 +562,55 @@ function drawBall(){
 }
 
 // ---- controlo tátil ----
+// desktop: arrasta diretamente o boneco para apontar e larga para rematar.
+// mobile: toca no boneco para o SELECIONAR e depois aponta a partir de qualquer parte do ecrã
+// (não é preciso manter o dedo em cima do boneco, evita tapar a seta com o próprio dedo).
 const activePointers = new Map();
 let dragging = null, dragStart = null, maxFingers = 1, posBuffer = [], mouse = {x:0,y:0};
+let selectedDisc = null;
 
 function getMousePos(e){
   const rect = canvas.getBoundingClientRect();
   return { x:(e.clientX-rect.left)*(W/rect.width), y:(e.clientY-rect.top)*(H/rect.height) };
 }
-function findDiscAt(pos){
+function findDiscAt(pos, generous){
   const list = turn === 'A' ? discsA : discsB;
-  return list.find(d => Math.hypot(d.x-pos.x,d.y-pos.y) < d.r+8);
+  const pad = generous ? 22 : 8;
+  return list.find(d => Math.hypot(d.x-pos.x,d.y-pos.y) < d.r+pad);
 }
 function canIPlay(){
-  if(localMode) return !celebrating;
-  return currentRoom && myTeam === turn && !celebrating;
+  return currentRoom && myTeam === turn && !celebrating && !foulFlash && !inPenalty && !awaitingFoulResult;
 }
 
 canvas.addEventListener('pointerdown', (e)=>{
   const pos = getMousePos(e);
   activePointers.set(e.pointerId, {x:pos.x,y:pos.y,t:performance.now()});
+
+  if(inPenalty){
+    if(activePointers.size !== 1) return;
+    if(penaltyRole !== 'shooter' || penaltyCommitted || !penaltyKeeperReady) return;
+    if(Math.hypot(penaltyShooterDisc.x-pos.x, penaltyShooterDisc.y-pos.y) < penaltyShooterDisc.r+(isMobile?22:8)){
+      dragging = penaltyShooterDisc; dragStart = { x: dragging.x, y: dragging.y };
+      maxFingers = 1; posBuffer = [{x:pos.x,y:pos.y,t:performance.now()}]; mouse = pos;
+    }
+    return;
+  }
+
+  if(isMobile){
+    if(activePointers.size !== 1) return;
+    if(selectedDisc){
+      // 2ª fase: já há um jogador selecionado — este toque, seja onde for, começa a apontar
+      dragging = selectedDisc;
+      dragStart = { x: selectedDisc.x, y: selectedDisc.y };
+      maxFingers = 1; posBuffer = [{x:pos.x,y:pos.y,t:performance.now()}]; mouse = pos;
+      return;
+    }
+    if(!everythingStopped() || !canIPlay()) return;
+    const d = findDiscAt(pos, true);
+    if(d) selectedDisc = d;
+    return;
+  }
+
   if(activePointers.size === 1){
     if(!everythingStopped() || !canIPlay()) return;
     const d = findDiscAt(pos);
@@ -614,20 +653,23 @@ canvas.addEventListener('pointerup', (e)=>{
     }
   }
 
+  if(inPenalty && dragging === penaltyShooterDisc){
+    if(vx !== 0 || vy !== 0){
+      penaltyCommitted = true;
+      document.getElementById('penaltyShooterHint').style.display = 'none';
+      document.getElementById('penaltyWaiting').style.display = 'block';
+      socket.emit('penalty_shot', { roomId: currentRoom.id, vx, vy });
+    }
+    dragging = null; posBuffer = []; selectedDisc = null;
+    return;
+  }
+
   if(vx !== 0 || vy !== 0){
     dragging.vx = vx; dragging.vy = vy;
-    shotTeam = dragging.team;
-    ballTouchedThisShot = false;
-    foulHandledThisShot = false;
-    if(localMode){
-      // sem servidor: o próprio cliente passa a vez ao terminar o remate
-      turn = turn === 'A' ? 'B' : 'A';
-      updateTurnBadge();
-    } else {
-      socket.emit('shot', { roomId: currentRoom.id, discId: dragging.id, vx, vy });
-    }
+    socket.emit('shot', { roomId: currentRoom.id, discId: dragging.id, vx, vy });
+    activeShotDiscId = dragging.id; activeShotTeam = dragging.team; activeShotTouchedBall = false;
   }
-  dragging = null; posBuffer = [];
+  dragging = null; posBuffer = []; selectedDisc = null;
 });
 
 document.getElementById('powerSlider').addEventListener('input', (e)=>{
@@ -647,10 +689,10 @@ function drawAim(){
   const endY = dragging.y + uy*(dragging.r*1.3+AIM_LENGTH);
 
   ctx.strokeStyle = 'rgba(212,175,55,0.9)';
-  ctx.lineWidth = 2.5;
+  ctx.lineWidth = AIM_LINE_WIDTH;
   ctx.beginPath(); ctx.moveTo(startX,startY); ctx.lineTo(endX,endY); ctx.stroke();
 
-  const headSize = 7;
+  const headSize = AIM_HEAD_SIZE;
   const angle = Math.atan2(uy,ux);
   ctx.beginPath();
   ctx.moveTo(endX,endY);
@@ -662,6 +704,31 @@ function drawAim(){
 }
 
 // ---- física ----
+function resolveCollision(a,b){
+  const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy), minDist=a.r+b.r;
+  if(dist===0 || dist>=minDist) return false;
+  const nx=dx/dist, ny=dy/dist, overlap=minDist-dist, totalMass=a.mass+b.mass;
+  a.x -= nx*overlap*(b.mass/totalMass); a.y -= ny*overlap*(b.mass/totalMass);
+  b.x += nx*overlap*(a.mass/totalMass); b.y += ny*overlap*(a.mass/totalMass);
+  const rvx=b.vx-a.vx, rvy=b.vy-a.vy, rel=rvx*nx+rvy*ny;
+  if(rel>0) return false;
+  const involvesBall = (a===ball||b===ball);
+  const restitution = involvesBall ? RESTITUTION_BALL : RESTITUTION_DISC;
+  const impulse = -(1+restitution)*rel/(1/a.mass+1/b.mass);
+  a.vx -= (impulse/a.mass)*nx; a.vy -= (impulse/a.mass)*ny;
+  b.vx += (impulse/b.mass)*nx; b.vy += (impulse/b.mass)*ny;
+
+  // toque de raspão: a componente tangencial do impacto vira rotação real da bola,
+  // com a fórmula do torque real (r × F) no ponto de contacto — toques de lados
+  // opostos produzem sempre rotações opostas
+  if(involvesBall){
+    const tx=-ny, ty=nx, relT=rvx*tx+rvy*ty, spinKick=relT*SPIN_TRANSFER;
+    if(a===ball) a.angVel -= spinKick/a.r;
+    if(b===ball) b.angVel -= spinKick/b.r;
+  }
+  return true;
+}
+
 function physicsStep(){
   const objs = [...allDiscs(), ball];
   for(const o of objs){
@@ -692,15 +759,48 @@ function physicsStep(){
   ball.angVel *= SPIN_DECAY;
   ball.angVel = Math.max(-MAX_SPIN_VEL, Math.min(MAX_SPIN_VEL, ball.angVel));
 
-  for(let i=0;i<objs.length;i++) for(let j=i+1;j<objs.length;j++) resolveCollision(objs[i],objs[j]);
-
-  // só conta golo quando a bola ULTRAPASSA COMPLETAMENTE a linha (a ponta de trás
-  // da bola também já passou) — se ficar apenas encostada/em cima da linha, não é golo.
-  // Em modo local não há "equipa A autoridade": o próprio cliente decide sempre.
-  if((localMode || (myTeam === 'A' && currentRoom)) && !celebrating){
-    if(ball.x + ball.r < FIELD_LEFT){ reportGoal('B'); }
-    else if(ball.x - ball.r > FIELD_RIGHT){ reportGoal('A'); }
+  let frameContacts = [];
+  for(let i=0;i<objs.length;i++) for(let j=i+1;j<objs.length;j++){
+    if(resolveCollision(objs[i],objs[j])) frameContacts.push([objs[i],objs[j]]);
   }
+
+  // deteção de falta: o disco que foi lançado nesta jogada só pode tocar em discos
+  // adversários DEPOIS de ter tocado na bola — se tocar antes, é falta
+  if(myTeam === 'A' && currentRoom && !celebrating && !inPenalty && activeShotDiscId){
+    const shooterDisc = findDiscById(activeShotDiscId);
+    if(!shooterDisc){
+      activeShotDiscId = null;
+    } else {
+      for(const [oa, ob] of frameContacts){
+        if(oa !== shooterDisc && ob !== shooterDisc) continue;
+        const other = oa === shooterDisc ? ob : oa;
+        if(other === ball){
+          activeShotTouchedBall = true;
+          activeShotDiscId = null;
+        } else if(other.team !== activeShotTeam){
+          if(!activeShotTouchedBall){
+            const fx = (shooterDisc.x + other.x)/2, fy = (shooterDisc.y + other.y)/2;
+            triggerFoul(activeShotTeam, fx, fy, shooterDisc.id, other.id);
+          }
+          activeShotDiscId = null;
+        }
+        break;
+      }
+    }
+  }
+
+  // golo: assim que o CENTRO da bola cruza a linha, é reportado de imediato e a física
+  // congela nesse mesmo frame — impede que a bola bata na rede e volte a sair para o campo
+  if(myTeam === 'A' && currentRoom && !celebrating){
+    if(ball.x < FIELD_LEFT){ reportGoal('B'); }
+    else if(ball.x > FIELD_RIGHT){ reportGoal('A'); }
+  }
+}
+
+function triggerFoul(offendingTeam, x, y, offenderDiscId, victimDiscId){
+  if(!currentRoom) return;
+  awaitingFoulResult = true;
+  socket.emit('foul', { roomId: currentRoom.id, offendingTeam, x, y, offenderDiscId, victimDiscId });
 }
 
 function reportGoal(team){
@@ -708,97 +808,9 @@ function reportGoal(team){
   celebrationStart = performance.now();
   celebrationTeam = team;
   ball.vx = 0; ball.vy = 0;
-
-  if(localMode){
-    if(team === 'A') scoreA++; else scoreB++;
-    document.getElementById('scoreA').textContent = scoreA;
-    document.getElementById('scoreB').textContent = scoreB;
-    // quem SOFRE o golo é quem reinicia a jogada no meio-campo, não quem marcou
-    turn = team === 'A' ? 'B' : 'A';
-    updateTurnBadge();
-    if(scoreA >= localBestOf || scoreB >= localBestOf){
-      localMatchOver = { a: scoreA, b: scoreB };
-    }
-  } else {
-    socket.emit('goal', { roomId: currentRoom.id, team });
-  }
-}
-
-// decide falta normal ou pénalti (consoante o local do choque) e repõe a bola.
-// offendingTeam = equipa que cometeu a falta (a que rematou/estava a mover a peça); a
-// equipa lesada (fouledTeam) é sempre quem fica com a bola a seguir.
-function handleFoul(x, y, offendingTeam){
-  if(foulHandledThisShot) return;
-  foulHandledThisShot = true;
-
-  const fouledTeam = offendingTeam === 'A' ? 'B' : 'A';
-  const isPenalty = insideOwnBox(offendingTeam, x, y);
-
-  let spot;
-  if(isPenalty){
-    // pénalti: a bola vai para a marca, à frente da baliza da equipa que cometeu a falta
-    spot = {
-      x: offendingTeam === 'A' ? FIELD_LEFT + BOX_W*0.65 : FIELD_RIGHT - BOX_W*0.65,
-      y: H/2
-    };
-  } else {
-    // falta normal: a bola fica exatamente no sítio onde aconteceu o choque
-    spot = { x: clamp(x, FIELD_LEFT+ball.r, FIELD_RIGHT-ball.r), y: clamp(y, FIELD_TOP+ball.r, FIELD_BOTTOM-ball.r) };
-  }
-
-  applyStoppage(fouledTeam, spot, isPenalty);
-
-  if(!localMode && currentRoom){
-    socket.emit('foul', { roomId: currentRoom.id, fouledTeam, spot, isPenalty });
-  }
-}
-
-// para quando o próprio cliente decidiu a falta (autoridade) e também quando recebe
-// a decisão do adversário (equipa A) via 'foul_called'
-function applyStoppage(fouledTeam, spot, isPenalty){
-  allDiscs().forEach(d => { d.vx = 0; d.vy = 0; });
-  ball.x = spot.x; ball.y = spot.y; ball.vx = 0; ball.vy = 0; ball.angVel = 0;
-  turn = fouledTeam;
-  updateTurnBadge();
-  showMessage(isPenalty ? 'PÉNALTI!' : 'FALTA!');
-}
-
-socket.on('foul_called', ({ fouledTeam, spot, isPenalty }) => {
-  if(myTeam === 'A') return; // a equipa A (autoridade) já aplicou isto localmente
-  applyStoppage(fouledTeam, spot, isPenalty);
-});
-
-function resolveCollision(a,b){
-  const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy), minDist=a.r+b.r;
-  if(dist===0 || dist>=minDist) return;
-  const nx=dx/dist, ny=dy/dist, overlap=minDist-dist, totalMass=a.mass+b.mass;
-  a.x -= nx*overlap*(b.mass/totalMass); a.y -= ny*overlap*(b.mass/totalMass);
-  b.x += nx*overlap*(a.mass/totalMass); b.y += ny*overlap*(a.mass/totalMass);
-
-  const involvesBall = (a===ball||b===ball);
-  const isAuthority = localMode || (myTeam === 'A' && currentRoom);
-  if(involvesBall){
-    ballTouchedThisShot = true;
-  } else if(isAuthority && a.team !== b.team && !ballTouchedThisShot && !foulHandledThisShot){
-    // dois bonecos de equipas diferentes bateram um no outro antes de a bola ter sido tocada neste lance = falta
-    handleFoul((a.x+b.x)/2, (a.y+b.y)/2, shotTeam || turn);
-  }
-
-  const rvx=b.vx-a.vx, rvy=b.vy-a.vy, rel=rvx*nx+rvy*ny;
-  if(rel>0) return;
-  const restitution = involvesBall ? RESTITUTION_BALL : RESTITUTION_DISC;
-  const impulse = -(1+restitution)*rel/(1/a.mass+1/b.mass);
-  a.vx -= (impulse/a.mass)*nx; a.vy -= (impulse/a.mass)*ny;
-  b.vx += (impulse/b.mass)*nx; b.vy += (impulse/b.mass)*ny;
-
-  // toque de raspão: a componente tangencial do impacto vira rotação real da bola,
-  // com a fórmula do torque real (r × F) no ponto de contacto — toques de lados
-  // opostos produzem sempre rotações opostas
-  if(involvesBall){
-    const tx=-ny, ty=nx, relT=rvx*tx+rvy*ty, spinKick=relT*SPIN_TRANSFER;
-    if(a===ball) a.angVel -= spinKick/a.r;
-    if(b===ball) b.angVel -= spinKick/b.r;
-  }
+  activeShotDiscId = null;
+  penaltyKickActive = false;
+  socket.emit('goal', { roomId: currentRoom.id, team });
 }
 
 function drawGoalCelebration(elapsed){
@@ -817,12 +829,24 @@ function drawGoalCelebration(elapsed){
   ctx.restore();
 }
 
+function drawFoulFlash(elapsed){
+  const t = Math.min(elapsed/FOUL_FLASH_MS,1);
+  ctx.fillStyle = `rgba(224,71,59,${0.18*(1-t)})`; ctx.fillRect(0,0,W,H);
+  const popIn = Math.min(elapsed/200,1);
+  const scale = 0.5+Math.sin(popIn*Math.PI/2)*0.6;
+  const fadeOut = elapsed > FOUL_FLASH_MS-300 ? Math.max(0,(FOUL_FLASH_MS-elapsed)/300) : 1;
+  ctx.save(); ctx.globalAlpha=fadeOut; ctx.translate(W/2,H/2); ctx.scale(scale,scale);
+  ctx.font='900 50px "Anton", sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.lineWidth=4; ctx.strokeStyle='#f5f5f0'; ctx.strokeText(foulFlashText,0,0);
+  ctx.fillStyle = '#e0473b'; ctx.fillText(foulFlashText,0,0);
+  ctx.restore();
+}
+
 function render(){
   ctx.clearRect(0,0,W,H);
   drawPitch();
   discsA.forEach(drawDisc); discsB.forEach(drawDisc);
   drawBall(); drawAim();
-  drawMessageOverlay();
 }
 
 function loop(){
@@ -832,21 +856,27 @@ function loop(){
       render(); drawGoalCelebration(elapsed);
       if(elapsed >= CELEBRATION_MS){
         celebrating = false;
-        if(localMode && localMatchOver){
-          const { a, b } = localMatchOver;
-          localMatchOver = null;
-          localMode = false;
-          const title = a === b ? 'EMPATE!' : (a > b ? 'VITÓRIA VERMELHO!' : 'VITÓRIA AZUL!');
-          document.getElementById('overTitle').textContent = title;
-          document.getElementById('overScore').textContent = `Resultado final: ${a} — ${b}`;
-          showScreen('screen-over');
-        } else {
-          resetPositions(); // bola e discos voltam à formação inicial no centro do campo
-        }
+        penaltyKickActive = false;
+        resetPositions(); // bola e discos voltam à formação inicial no centro do campo
       }
+    } else if(foulFlash){
+      const elapsed = performance.now()-foulFlashStart;
+      render(); drawFoulFlash(elapsed);
+      if(elapsed >= FOUL_FLASH_MS){ foulFlash = false; }
+    } else if(awaitingFoulResult){
+      render();
+    } else if(inPenalty){
+      render();
     } else {
       physicsStep();
       render();
+      if(myTeam === 'A' && activeShotDiscId && everythingStopped()){
+        activeShotDiscId = null;
+      }
+      if(myTeam === 'A' && penaltyKickActive && currentRoom && everythingStopped()){
+        penaltyKickActive = false;
+        socket.emit('penalty_missed', { roomId: currentRoom.id });
+      }
     }
   }
   requestAnimationFrame(loop);
@@ -854,11 +884,9 @@ function loop(){
 
 // a equipa A (vermelho) é a autoridade da física — envia o estado real várias
 // vezes por segundo; a equipa B (azul) corrige-se por esse estado, evitando
-// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo.
-// Em modo local não há rede nenhuma envolvida, por isso isto nunca dispara
-// (myTeam fica a null durante o modo local).
+// que a bola vá divergindo entre os dois ecrãs por pequenas diferenças de tempo
 setInterval(() => {
-  if(myTeam === 'A' && currentRoom && document.getElementById('screen-game').classList.contains('active') && !celebrating){
+  if(myTeam === 'A' && currentRoom && document.getElementById('screen-game').classList.contains('active') && !celebrating && !foulFlash && !awaitingFoulResult){
     socket.emit('state_sync', {
       roomId: currentRoom.id,
       ball: { x:ball.x, y:ball.y, vx:ball.vx, vy:ball.vy, spin:ball.spin, angVel:ball.angVel },
@@ -869,7 +897,7 @@ setInterval(() => {
 
 socket.on('state_sync', (state) => {
   if(myTeam === 'A') return;
-  if(celebrating) return; // durante a celebração cada lado usa a formação local determinística
+  if(celebrating || foulFlash) return; // cada lado usa a formação local determinística nestas fases
   if(state.ball) Object.assign(ball, state.ball);
   if(state.discs){
     state.discs.forEach(sd => {
@@ -878,6 +906,104 @@ socket.on('state_sync', (state) => {
     });
   }
 });
+
+// ============ LIVRE DE 10 METROS ============
+function startTenMeterKick(offendingTeam, fouledTeam){
+  inPenalty = true;
+  penaltyCommitted = false;
+  penaltyKeeperReady = false;
+  penaltyOffendingTeam = offendingTeam;
+  penaltyFouledTeam = fouledTeam;
+  penaltyKickActive = true;
+  activeShotDiscId = null;
+
+  const shootingRight = fouledTeam === 'A'; // A ataca a baliza direita (de B)
+  const spotX = shootingRight ? FIELD_RIGHT - BOX_W - TEN_METER_GAP : FIELD_LEFT + BOX_W + TEN_METER_GAP;
+  const shooterX = shootingRight ? spotX - TEN_METER_SHOOTER_OFFSET : spotX + TEN_METER_SHOOTER_OFFSET;
+  const keeperX = shootingRight ? FIELD_RIGHT - TEN_METER_KEEPER_LINE : FIELD_LEFT + TEN_METER_KEEPER_LINE;
+
+  ball.x = spotX; ball.y = H/2; ball.vx = 0; ball.vy = 0; ball.spin = 0; ball.angVel = 0;
+
+  const shooterList = fouledTeam === 'A' ? discsA : discsB;
+  const keeperList = offendingTeam === 'A' ? discsA : discsB;
+  penaltyShooterDisc = shooterList[0];
+  penaltyKeeperDisc = keeperList[0];
+  penaltyShooterDisc.x = shooterX; penaltyShooterDisc.y = H/2; penaltyShooterDisc.vx=0; penaltyShooterDisc.vy=0;
+  penaltyKeeperDisc.x = keeperX; penaltyKeeperDisc.y = H/2; penaltyKeeperDisc.vx=0; penaltyKeeperDisc.vy=0;
+
+  // afasta os restantes jogadores para não atrapalharem o lance
+  let i = 0;
+  allDiscs().forEach(d => {
+    if(d === penaltyShooterDisc || d === penaltyKeeperDisc) return;
+    d.x = 50 + i*24; d.y = FIELD_TOP + 16;
+    d.vx = 0; d.vy = 0;
+    i++;
+  });
+
+  penaltyRole = (myTeam === offendingTeam) ? 'keeper' : (myTeam === fouledTeam ? 'shooter' : null);
+  showPenaltyOverlay();
+}
+
+function showPenaltyOverlay(){
+  const overlay = document.getElementById('penaltyOverlay');
+  overlay.style.display = 'flex';
+  document.getElementById('penaltyKeeperControls').style.display = penaltyRole === 'keeper' ? 'block' : 'none';
+  document.getElementById('penaltyShooterWait').style.display = (penaltyRole === 'shooter' && !penaltyKeeperReady) ? 'block' : 'none';
+  document.getElementById('penaltyShooterHint').style.display = (penaltyRole === 'shooter' && penaltyKeeperReady) ? 'block' : 'none';
+  document.getElementById('penaltyWaiting').style.display = 'none';
+}
+function hidePenaltyOverlay(){
+  document.getElementById('penaltyOverlay').style.display = 'none';
+}
+
+document.querySelectorAll('#penaltyKeeperControls button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if(!inPenalty || penaltyRole !== 'keeper' || penaltyCommitted) return;
+    penaltyCommitted = true;
+    document.getElementById('penaltyKeeperControls').style.display = 'none';
+    document.getElementById('penaltyWaiting').style.display = 'block';
+    socket.emit('penalty_keeper_choice', { roomId: currentRoom.id, side: btn.dataset.side });
+  });
+});
+
+socket.on('penalty_keeper_ready', () => {
+  penaltyKeeperReady = true;
+  if(penaltyRole === 'shooter'){
+    document.getElementById('penaltyShooterWait').style.display = 'none';
+    document.getElementById('penaltyShooterHint').style.display = 'block';
+  }
+});
+
+// só chega quando AMBOS já escolheram — o remate e o mergulho do guarda-redes
+// arrancam exatamente ao mesmo tempo nos dois ecrãs
+socket.on('penalty_ready', ({ keeperChoice, shot }) => {
+  hidePenaltyOverlay();
+  penaltyRole = null;
+  penaltyCommitted = false;
+
+  ball.vx = shot.vx; ball.vy = shot.vy;
+
+  const targetY = keeperChoice === 'top' ? GOAL_TOP_Y + 15 : keeperChoice === 'bottom' ? GOAL_BOTTOM_Y - 15 : H/2;
+  const dy = targetY - penaltyKeeperDisc.y;
+  const dist = Math.max(Math.abs(dy), 1);
+  penaltyKeeperDisc.vy = (dy/dist) * KEEPER_DASH_SPEED;
+  penaltyKeeperDisc.vx = 0;
+
+  inPenalty = false; // a física normal do motor de jogo passa a resolver a jogada (golo, defesa ou fora)
+});
+
+socket.on('penalty_over', ({ turn: t }) => {
+  penaltyRole = null; penaltyCommitted = false; penaltyKeeperReady = false;
+  hidePenaltyOverlay();
+  turn = t;
+  updateTurnBadge();
+  resetPositions();
+});
+
+if(isMobile){
+  const hint = document.querySelector('#screen-game .footer .hint');
+  if(hint) hint.textContent = 'Toca no teu jogador para o selecionares e depois toca em qualquer parte do ecrã para apontares e largares o remate.';
+}
 
 resetPositions();
 loop();
